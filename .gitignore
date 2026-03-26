@@ -1,0 +1,35 @@
+# 敏感文件
+.env
+config/settings.local.yaml
+keys/
+
+# 构建产物
+target/
+*.rlib
+*.rlib.rmeta
+
+# 日志文件
+logs/
+*.log
+
+# 回测结果
+backtests/results/
+*.html
+*.csv
+
+# IDE配置
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 临时文件
+tmp/
+temp/
+*.tmp
+*.temp
+
+# 编辑器备份
+*~
+*.bak
+*.old

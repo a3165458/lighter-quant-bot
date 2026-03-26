@@ -1,0 +1,72 @@
+[package]
+name = "lighter-bot"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# 异步运行时
+tokio = { version = "1.35", features = ["full"] }
+tokio-tungstenite = { version = "0.21", features = ["native-tls"] }
+tokio-util = "0.7"
+futures = "0.3"
+futures-util = "0.3"
+
+# HTTP客户端
+reqwest = { version = "0.11", features = ["json", "stream"] }
+
+# 序列化/反序列化
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+
+# 数据处理
+chrono = { version = "0.4", features = ["serde"] }
+rand = "0.8"
+statrs = "0.16"
+
+# Web框架（用于Dashboard）
+axum = { version = "0.7", features = ["ws"] }
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors", "fs"] }
+
+# 日志和监控
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+tracing-appender = "0.2"
+
+# 加密和认证
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+
+# 异步特征
+async-trait = "0.1"
+
+# 工具库
+anyhow = "1.0"
+thiserror = "1.0"
+clap = { version = "4.0", features = ["derive"] }
+config = "0.13"
+dotenv = "0.15"
+
+# 数学和统计
+ndarray = "0.15"
+
+# 性能优化
+rayon = "1.7"
+
+[dev-dependencies]
+tempfile = "3.6"
+serial_test = "2.0"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "market_data_bench"
+harness = false
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3
+panic = "abort"
+strip = true
