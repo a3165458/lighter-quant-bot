@@ -286,10 +286,12 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
         rm.update_equity(equity);
     }
 
-    // Initialize strategy (wrapped in Arc for sharing with refresh task)
-    let strategy: Arc<dyn strategy::Strategy> = Arc::from(strategy::create_strategy(&settings)
-        .context("Failed to initialize strategy")?);
-    let strategy_name = strategy.name().to_string();
+    // Initialize strategy (wrapped in Arc<RwLock> for runtime switching)
+    let strategy: Arc<tokio::sync::RwLock<Box<dyn strategy::Strategy>>> = Arc::new(
+        tokio::sync::RwLock::new(strategy::create_strategy(&settings)
+            .context("Failed to initialize strategy")?)
+    );
+    let strategy_name = strategy.read().await.name().to_string();
     info!("📈 Strategy: {}", strategy_name);
 
     // Update dashboard with strategy name
@@ -433,7 +435,7 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
 
                         if cancelled > 0 {
                             info!("🗑️ Cancelled {} stale orders, resetting grid state", cancelled);
-                            strategy_refresh.clear_filled_state();
+                            strategy_refresh.read().await.clear_filled_state();
                             let _ = client_for_refresh.refresh_nonce().await;
                             let new_count = count.saturating_sub(cancelled);
                             open_orders_refresh.store(new_count, std::sync::atomic::Ordering::Relaxed);
@@ -455,7 +457,7 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
                                     match client_for_refresh.cancel_all_orders("all").await {
                                         Ok(()) => {
                                             info!("✅ Auto-reset: all orders cancelled, re-gridding");
-                                            strategy_refresh.clear_filled_state();
+                                            strategy_refresh.read().await.clear_filled_state();
                                             let _ = client_for_refresh.refresh_nonce().await;
                                             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                                             open_orders_refresh.store(0, std::sync::atomic::Ordering::Relaxed);
@@ -598,7 +600,7 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
                                     "price": prev_entry,
                                     "quantity": closed_size,
                                     "pnl": (pnl_share * 10000.0).round() / 10000.0,
-                                    "close_type": close_type,
+                                    "action": close_type, // "Full Close" or "Partial Close"
                                 }));
                             }
                         }
@@ -922,7 +924,7 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
         };
         let current_leverage = if equity > 0.0 { position_exposure / equity } else { 0.0 };
 
-        match strategy.evaluate(&snapshot).await {
+        match strategy.read().await.evaluate(&snapshot).await {
             Ok(Some(signals)) => {
                 for signal in signals {
                     // Check if market is active (dashboard trading controls)
@@ -1013,6 +1015,13 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
                             let mut ds = dash_state.write().await;
                             ds.total_trades = trade_count;
                             ds.open_orders = open_orders_count.load(std::sync::atomic::Ordering::Relaxed);
+                            // Determine action: Open (new position) or Add (increase existing)
+                            let action = {
+                                let has_position = ds.positions.iter().any(|p| {
+                                    p.get("symbol").and_then(|s| s.as_str()) == Some(&signal.symbol)
+                                });
+                                if has_position { "Add" } else { "Open" }
+                            };
                             ds.trade_history.push(serde_json::json!({
                                 "timestamp": signal.timestamp.to_rfc3339(),
                                 "symbol": signal.symbol,
@@ -1021,7 +1030,8 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
                                 "price": signal.price,
                                 "quantity": signal.quantity,
                                 "pnl": 0.0,
-                                "trade_type": "order_placed",
+                                "action": action,
+                                "reason": signal.reason,
                             }));
                             // Keep only last 100 trades
                             let len = ds.trade_history.len();
@@ -1082,18 +1092,55 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
             last_risk_update = std::time::Instant::now();
         }
 
-        // Check if dashboard user changed strategy params
+        // Check if dashboard user changed strategy params or switched strategy
         {
             let mut ds = dash_state.write().await;
             if ds.strategy_config_changed {
                 ds.strategy_config_changed = false;
+                let new_strategy_name = ds.strategy_name.clone();
                 let params = ds.strategy_params.clone();
                 drop(ds);
-                if !params.is_empty() {
-                    info!("🔧 Dashboard strategy config update detected: {:?}", params);
-                    // Apply by clearing grid state so new params take effect on next cycle
-                    strategy.clear_filled_state();
-                    info!("✅ Grid state cleared — new params will apply on next anchor reset");
+
+                // Build params string from HashMap
+                let params_str: String = params.iter()
+                    .map(|(k, v)| format!("{}={}", k, v))
+                    .collect::<Vec<_>>()
+                    .join(",");
+
+                // Check if strategy type changed
+                let current_name = strategy.read().await.name().to_string();
+                if new_strategy_name != current_name && !new_strategy_name.is_empty() {
+                    info!("🔄 Strategy switch: {} → {}", current_name, new_strategy_name);
+                    match crate::strategy::create_strategy_with_params(
+                        &new_strategy_name,
+                        if params_str.is_empty() { None } else { Some(&params_str) }
+                    ) {
+                        Ok(new_strat) => {
+                            *strategy.write().await = new_strat;
+                            info!("✅ Strategy switched to: {}", new_strategy_name);
+                        }
+                        Err(e) => {
+                            warn!("❌ Strategy switch failed: {} — keeping {}", e, current_name);
+                            let mut ds = dash_state.write().await;
+                            ds.strategy_name = current_name;
+                        }
+                    }
+                } else if !params_str.is_empty() {
+                    info!("🔧 Strategy params update: {:?}", params);
+                    // Recreate with new params
+                    match crate::strategy::create_strategy_with_params(
+                        &current_name,
+                        Some(&params_str)
+                    ) {
+                        Ok(new_strat) => {
+                            *strategy.write().await = new_strat;
+                            info!("✅ Strategy recreated with new params");
+                        }
+                        Err(e) => {
+                            warn!("⚠ Failed to recreate strategy: {} — clearing state instead", e);
+                            strategy.read().await.clear_filled_state();
+                        }
+                    }
                 }
             }
         }

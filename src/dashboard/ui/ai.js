@@ -227,12 +227,75 @@
         }
 
         html += '</div>';
+
+        // "Apply to Live" button — sends current params to live strategy
+        var currentParams = document.getElementById('bt-params').value;
+        var currentStrategy = document.getElementById('bt-strategy').value;
+        if (currentParams) {
+            html += '<div style="margin-top:16px;display:flex;gap:8px;align-items:center">' +
+                '<button class="btn btn-ai" id="btn-apply-live" style="flex:1" onclick="applyToLive()">🚀 Apply to Live Trading</button>' +
+                '<div style="font-size:11px;color:var(--text-sub);flex:1">Applies <b>' + currentStrategy + '</b> with params: <code>' + currentParams + '</code> to your live bot</div>' +
+                '</div>';
+        }
+
         content.innerHTML = html;
 
         if (eqCurve.length > 1) {
             setTimeout(function() { drawChart('bt-chart', eqCurve); }, 50);
         }
     }
+
+    // Apply optimized params to live trading
+    window.applyToLive = function() {
+        var btn = document.getElementById('btn-apply-live');
+        var strategy = document.getElementById('bt-strategy').value;
+        var paramsStr = document.getElementById('bt-params').value;
+        if (!paramsStr) { alert('No parameters to apply'); return; }
+
+        // Parse params string into object
+        var params = {};
+        paramsStr.split(',').forEach(function(pair) {
+            var kv = pair.split('=');
+            if (kv.length === 2) {
+                var val = parseFloat(kv[1].trim());
+                params[kv[0].trim()] = isNaN(val) ? kv[1].trim() : val;
+            }
+        });
+
+        // Map strategy names
+        var strategyName = strategy === 'grid' ? 'grid_trading' : strategy === 'trend' ? 'trend_following' : strategy;
+
+        btn.disabled = true;
+        btn.textContent = '⏳ Applying...';
+
+        fetch('/api/strategy', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ strategy: strategyName, params: params })
+        })
+        .then(function(r) { return r.json(); })
+        .then(function(d) {
+            btn.disabled = false;
+            btn.textContent = '✅ Applied to Live!';
+            btn.style.background = 'var(--success)';
+            var log = document.getElementById('ai-log');
+            if (log) {
+                log.style.display = 'block';
+                log.textContent += '> ✅ Applied to live: ' + strategyName + ' with ' + paramsStr + '\n';
+                log.scrollTop = log.scrollHeight;
+            }
+            setTimeout(function() {
+                btn.textContent = '🚀 Apply to Live Trading';
+                btn.style.background = '';
+            }, 3000);
+        })
+        .catch(function(e) {
+            btn.disabled = false;
+            btn.textContent = '❌ Failed — Try Again';
+            setTimeout(function() { btn.textContent = '🚀 Apply to Live Trading'; }, 3000);
+            alert('Failed to apply: ' + e.message);
+        });
+    };
 
     function metric(label, value, isGood) {
         var cls = isGood ? 'positive' : 'negative';

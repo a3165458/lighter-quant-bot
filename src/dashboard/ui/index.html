@@ -244,6 +244,7 @@ tr:hover td { background:var(--bg-card-hover); }
 .badge-down { background:var(--danger-bg); color:var(--danger); }
 .badge-warn { background:var(--warning-bg); color:var(--warning); }
 .badge-info { background:var(--primary-dim); color:var(--primary); }
+.badge-neutral { background:var(--bg-input); color:var(--text-sub); }
 
 /* ── PnL Colors ── */
 .c-up { color:var(--success) !important; }
@@ -529,8 +530,8 @@ tr:hover td { background:var(--bg-card-hover); }
           <tbody id="ord-tbody"><tr><td colspan="7" class="empty-cell">No open orders</td></tr></tbody></table>
         </div>
         <div id="tp-trades" class="tab-panel" style="max-height:360px;overflow-y:auto;">
-          <table><thead><tr><th>Time</th><th>Market</th><th>Side</th><th>Price</th><th>Qty</th><th class="td-r">P&amp;L</th></tr></thead>
-          <tbody id="trd-tbody"><tr><td colspan="6" class="empty-cell">No trades yet</td></tr></tbody></table>
+          <table><thead><tr><th>Time</th><th>Market</th><th>Action</th><th>Side</th><th>Price</th><th>Qty</th><th class="td-r">P&amp;L</th></tr></thead>
+          <tbody id="trd-tbody"><tr><td colspan="7" class="empty-cell">No trades yet</td></tr></tbody></table>
         </div>
         <div id="tp-log" class="tab-panel">
           <div class="log-area" id="log-box"></div>
@@ -642,23 +643,26 @@ tr:hover td { background:var(--bg-card-hover); }
       <div class="card">
         <div class="card-header">
           <div><div class="card-title">DCA Strategy</div><div class="card-subtitle" data-i18n="dcaSub">Dollar-Cost Averaging</div></div>
-          <span class="badge badge-warn">○ Inactive</span>
+          <span class="badge badge-warn" id="dca-status-badge">○ Inactive</span>
         </div>
         <div class="cfg-group"><label class="cfg-label" data-i18n="buyInterval">Buy Interval (hours)</label><input type="number" class="cfg-input" id="cfg-dca-interval" value="4" min="1" max="168"></div>
         <div class="cfg-group"><label class="cfg-label" data-i18n="amountPerBuy">Amount per Buy ($)</label><input type="number" class="cfg-input" id="cfg-dca-amount" value="5" min="1" max="50"></div>
         <div class="cfg-group"><label class="cfg-label" data-i18n="dipThreshold">Dip Threshold (%)</label><input type="number" class="cfg-input" id="cfg-dca-dip" value="2" step="0.5" min="0" max="20"></div>
-        <button class="btn btn-outline" style="width:100%;opacity:0.6;" disabled>Coming Soon</button>
+        <button class="btn btn-outline" id="btn-activate-dca" style="width:100%;" data-i18n="activateStrategy">Activate DCA Strategy</button>
+        <div class="cfg-msg" id="dca-msg"></div>
       </div>
       <!-- Trend Following Strategy Card -->
       <div class="card">
         <div class="card-header">
-          <div><div class="card-title">Trend Following</div><div class="card-subtitle" data-i18n="trendSub">EMA Crossover + RSI</div></div>
-          <span class="badge badge-warn">○ Inactive</span>
+          <div><div class="card-title">Trend Following</div><div class="card-subtitle" data-i18n="trendSub">EMA Crossover</div></div>
+          <span class="badge badge-warn" id="trend-status-badge">○ Inactive</span>
         </div>
-        <div class="cfg-group"><label class="cfg-label" data-i18n="fastEma">Fast EMA Period</label><input type="number" class="cfg-input" id="cfg-trend-fast" value="9" min="3" max="50"></div>
+        <div class="cfg-group"><label class="cfg-label" data-i18n="fastEma">Fast EMA Period</label><input type="number" class="cfg-input" id="cfg-trend-fast" value="7" min="3" max="50"></div>
         <div class="cfg-group"><label class="cfg-label" data-i18n="slowEma">Slow EMA Period</label><input type="number" class="cfg-input" id="cfg-trend-slow" value="21" min="10" max="200"></div>
-        <div class="cfg-group"><label class="cfg-label" data-i18n="rsiPeriod">RSI Period</label><input type="number" class="cfg-input" id="cfg-trend-rsi" value="14" min="5" max="50"></div>
-        <button class="btn btn-outline" style="width:100%;opacity:0.6;" disabled>Coming Soon</button>
+        <div class="cfg-group"><label class="cfg-label" data-i18n="stopLoss">Stop Loss (%)</label><input type="number" class="cfg-input" id="cfg-trend-sl" value="3" step="0.5" min="0.5" max="20"></div>
+        <div class="cfg-group"><label class="cfg-label" data-i18n="takeProfit">Take Profit (%)</label><input type="number" class="cfg-input" id="cfg-trend-tp" value="6" step="0.5" min="1" max="50"></div>
+        <button class="btn btn-outline" id="btn-activate-trend" style="width:100%;" data-i18n="activateStrategy">Activate Trend Strategy</button>
+        <div class="cfg-msg" id="trend-msg"></div>
       </div>
     </div>
   </div>
@@ -706,8 +710,8 @@ tr:hover td { background:var(--bg-card-hover); }
       </div>
     </div>
     <div class="card" style="padding:0; overflow:hidden;">
-      <table><thead><tr><th data-i18n="time">Time</th><th data-i18n="asset">Asset</th><th data-i18n="side">Side</th><th data-i18n="price">Price</th><th data-i18n="qty">Qty</th><th class="td-r" data-i18n="pnl">PNL</th></tr></thead>
-      <tbody id="history-tbody"><tr><td colspan="6" class="empty-cell" data-i18n="noHistory">No trade history</td></tr></tbody></table>
+      <table><thead><tr><th data-i18n="time">Time</th><th data-i18n="asset">Asset</th><th>Action</th><th data-i18n="side">Side</th><th data-i18n="price">Price</th><th data-i18n="qty">Qty</th><th class="td-r" data-i18n="pnl">PNL</th></tr></thead>
+      <tbody id="history-tbody"><tr><td colspan="7" class="empty-cell" data-i18n="noHistory">No trade history</td></tr></tbody></table>
     </div>
   </div>
 

@@ -1,3 +1,4 @@
+pub mod dca_strategy;
 pub mod grid_strategy;
 pub mod trend_strategy;
 
@@ -61,7 +62,8 @@ pub fn create_strategy(settings: &Config) -> Result<Box<dyn Strategy>> {
             fast_ma, slow_ma, stop_loss, take_profit,
         )))
     } else {
-        anyhow::bail!("没有启用任何策略")
+        // Default to grid strategy
+        Ok(Box::new(grid_strategy::GridStrategy::new(10, 100.0, 0.02)))
     }
 }
 
@@ -88,6 +90,12 @@ pub fn create_strategy_with_params(name: &str, params: Option<&str>) -> Result<B
             let stop_loss = kv.get("stop_loss").and_then(|v| v.parse().ok()).unwrap_or(0.03);
             let take_profit = kv.get("take_profit").and_then(|v| v.parse().ok()).unwrap_or(0.06);
             Ok(Box::new(trend_strategy::TrendStrategy::new(fast_ma, slow_ma, stop_loss, take_profit)))
+        }
+        "dca" => {
+            let interval = kv.get("interval").and_then(|v| v.parse().ok()).unwrap_or(4.0);
+            let amount = kv.get("amount").and_then(|v| v.parse().ok()).unwrap_or(5.0);
+            let dip = kv.get("dip_threshold").and_then(|v| v.parse().ok()).unwrap_or(2.0);
+            Ok(Box::new(dca_strategy::DcaStrategy::new(interval, amount, dip)))
         }
         _ => anyhow::bail!("未知策略: {}", name),
     }

@@ -394,15 +394,27 @@
                 if ($('cfg-inv')) $('cfg-inv').value = data.params.investment_per_grid || 8;
                 if ($('cfg-dev')) $('cfg-dev').value = data.params.price_deviation || 0.012;
             }
-            if (data.name && $('strat-name')) $('strat-name').textContent = data.name;
+            if (data.strategy && $('strat-name')) $('strat-name').textContent = data.strategy;
+            updateStrategyBadges(data.strategy || 'grid_trading');
         }).catch(e => addLog('e', 'Failed to load strategy config'));
     }
 
-    // ── Strategy Apply ──
+    // Update strategy card badges based on active strategy
+    function updateStrategyBadges(active) {
+        const gridBadge = document.querySelector('#strat-name')?.closest('.card')?.querySelector('.badge');
+        const dcaBadge = $('dca-status-badge');
+        const trendBadge = $('trend-status-badge');
+        if (gridBadge) gridBadge.className = 'badge ' + (active === 'grid_trading' || active === 'grid' ? 'badge-up' : 'badge-warn');
+        if (gridBadge) gridBadge.textContent = (active === 'grid_trading' || active === 'grid') ? '● Active' : '○ Inactive';
+        if (dcaBadge) { dcaBadge.className = 'badge ' + (active === 'dca' ? 'badge-up' : 'badge-warn'); dcaBadge.textContent = active === 'dca' ? '● Active' : '○ Inactive'; }
+        if (trendBadge) { trendBadge.className = 'badge ' + (active === 'trend_following' || active === 'trend' ? 'badge-up' : 'badge-warn'); trendBadge.textContent = (active === 'trend_following' || active === 'trend') ? '● Active' : '○ Inactive'; }
+    }
+
+    // ── Strategy Apply (Grid) ──
     const applyBtn = $('btn-apply');
     if (applyBtn) {
         applyBtn.addEventListener('click', function() {
-            const body = { params: {
+            const body = { strategy: 'grid_trading', params: {
                 grid_count: parseFloat($('cfg-gc').value),
                 investment_per_grid: parseFloat($('cfg-inv').value),
                 price_deviation: parseFloat($('cfg-dev').value)
@@ -411,15 +423,66 @@
             const msgEl = $('cfg-msg');
             fetch('/api/strategy', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
                 .then(r => r.json())
-                .then(() => {
-                    msgEl.innerText = '✓ Changes applied successfully';
+                .then(d => {
+                    msgEl.innerText = '✓ Grid strategy activated';
                     msgEl.style.color = 'var(--success)';
-                    addNotification('trade', 'Strategy parameters updated');
-                    addLog('i', 'Strategy params updated: gc=' + body.params.grid_count + ' inv=' + body.params.investment_per_grid + ' dev=' + body.params.price_deviation);
+                    updateStrategyBadges('grid_trading');
+                    addNotification('trade', 'Grid strategy activated');
                     setTimeout(() => msgEl.innerText = '', 3000);
                 })
-                .catch(() => { msgEl.innerText = '✗ Failed to apply changes'; msgEl.style.color = 'var(--danger)'; })
+                .catch(() => { msgEl.innerText = '✗ Failed to apply'; msgEl.style.color = 'var(--danger)'; })
                 .finally(() => { this.disabled = false; this.innerText = 'Apply Changes'; });
+        });
+    }
+
+    // ── DCA Strategy Activate ──
+    const dcaBtn = $('btn-activate-dca');
+    if (dcaBtn) {
+        dcaBtn.addEventListener('click', function() {
+            const body = { strategy: 'dca', params: {
+                interval: parseFloat($('cfg-dca-interval').value),
+                amount: parseFloat($('cfg-dca-amount').value),
+                dip_threshold: parseFloat($('cfg-dca-dip').value)
+            }};
+            this.disabled = true; this.innerText = 'Activating...';
+            const msgEl = $('dca-msg');
+            fetch('/api/strategy', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+                .then(r => r.json())
+                .then(d => {
+                    msgEl.innerText = '✓ DCA strategy activated';
+                    msgEl.style.color = 'var(--success)';
+                    updateStrategyBadges('dca');
+                    addNotification('trade', 'DCA strategy activated');
+                    setTimeout(() => msgEl.innerText = '', 3000);
+                })
+                .catch(() => { msgEl.innerText = '✗ Failed'; msgEl.style.color = 'var(--danger)'; })
+                .finally(() => { this.disabled = false; this.innerText = 'Activate DCA Strategy'; });
+        });
+    }
+
+    // ── Trend Following Activate ──
+    const trendBtn = $('btn-activate-trend');
+    if (trendBtn) {
+        trendBtn.addEventListener('click', function() {
+            const body = { strategy: 'trend_following', params: {
+                fast_ma: parseInt($('cfg-trend-fast').value),
+                slow_ma: parseInt($('cfg-trend-slow').value),
+                stop_loss: parseFloat($('cfg-trend-sl').value) / 100.0,
+                take_profit: parseFloat($('cfg-trend-tp').value) / 100.0
+            }};
+            this.disabled = true; this.innerText = 'Activating...';
+            const msgEl = $('trend-msg');
+            fetch('/api/strategy', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+                .then(r => r.json())
+                .then(d => {
+                    msgEl.innerText = '✓ Trend strategy activated';
+                    msgEl.style.color = 'var(--success)';
+                    updateStrategyBadges('trend_following');
+                    addNotification('trade', 'Trend following strategy activated');
+                    setTimeout(() => msgEl.innerText = '', 3000);
+                })
+                .catch(() => { msgEl.innerText = '✗ Failed'; msgEl.style.color = 'var(--danger)'; })
+                .finally(() => { this.disabled = false; this.innerText = 'Activate Trend Strategy'; });
         });
     }
 
@@ -567,11 +630,19 @@
         const tb = $('trd-tbody');
         if (!tb) return;
         const rows = data.slice(0, 15);
-        if (rows.length === 0) { tb.innerHTML = '<tr><td colspan="6" class="empty-cell">No trades yet</td></tr>'; return; }
+        if (rows.length === 0) { tb.innerHTML = '<tr><td colspan="7" class="empty-cell">No trades yet</td></tr>'; return; }
         tb.innerHTML = rows.map(t => {
             const ts = new Date(t.timestamp).toLocaleTimeString();
             const pnl = t.pnl || 0;
-            return `<tr><td>${ts}</td><td>${t.symbol||t.market}</td><td><span class="badge ${t.side==='Buy'?'badge-up':'badge-down'}">${t.side}</span></td><td>$${parseFloat(t.price).toFixed(2)}</td><td>${t.quantity}</td><td class="td-r ${pnlClass(pnl)}">${fmtPnl(pnl)}</td></tr>`;
+            const action = t.action || t.close_type || t.trade_type || 'Order';
+            const isClose = action.includes('Close') || action.includes('Stop') || action.includes('Emergency') || action.includes('Liquidat');
+            const actionBadge = isClose
+                ? `<span class="badge ${pnl >= 0 ? 'badge-up' : 'badge-down'}">${action}</span>`
+                : `<span class="badge badge-neutral">${action}</span>`;
+            const pnlCell = isClose
+                ? `<td class="td-r ${pnlClass(pnl)}">${fmtPnl(pnl)}</td>`
+                : `<td class="td-r" style="color:var(--text-muted)">—</td>`;
+            return `<tr><td>${ts}</td><td>${t.symbol||t.market}</td><td>${actionBadge}</td><td><span class="badge ${t.side==='Buy'?'badge-up':'badge-down'}">${t.side}</span></td><td>$${parseFloat(t.price).toFixed(2)}</td><td>${parseFloat(t.quantity).toFixed(6)}</td>${pnlCell}</tr>`;
         }).join('');
     }
 
@@ -645,38 +716,51 @@
     function renderHistory(searchOverride) {
         const tb = $('history-tbody');
         if (!tb) return;
-        const search = searchOverride || ($('h-search') ? $('h-search').value.toLowerCase() : '');
+        const search = (typeof searchOverride === 'string') ? searchOverride : ($('h-search') ? $('h-search').value.toLowerCase() : '');
         let filtered = allTrades;
         if (historyAssetFilter !== 'all') {
             filtered = filtered.filter(t => (t.symbol || t.market || '').toUpperCase().includes(historyAssetFilter));
         }
         if (search) {
             filtered = filtered.filter(t => {
-                const txt = [t.symbol, t.market, t.side, t.price, t.quantity].join(' ').toLowerCase();
+                const txt = [t.symbol, t.market, t.side, t.price, t.quantity, t.action].join(' ').toLowerCase();
                 return txt.includes(search);
             });
         }
         if (filtered.length === 0) {
-            tb.innerHTML = '<tr><td colspan="6" class="empty-cell">No matching trades</td></tr>';
+            tb.innerHTML = '<tr><td colspan="7" class="empty-cell">No matching trades</td></tr>';
             return;
         }
         tb.innerHTML = filtered.slice(0, 100).map(t => {
             const ts = new Date(t.timestamp).toLocaleString();
             const pnl = t.pnl || 0;
-            return `<tr><td>${ts}</td><td>${t.symbol||t.market}</td><td><span class="badge ${t.side==='Buy'?'badge-up':'badge-down'}">${t.side}</span></td><td>$${parseFloat(t.price).toFixed(2)}</td><td>${t.quantity}</td><td class="td-r ${pnlClass(pnl)}">${fmtPnl(pnl)}</td></tr>`;
+            const action = t.action || t.close_type || t.trade_type || 'Order';
+            const isClose = action.includes('Close') || action.includes('Stop') || action.includes('Emergency') || action.includes('Liquidat');
+            const actionBadge = isClose
+                ? `<span class="badge ${pnl >= 0 ? 'badge-up' : 'badge-down'}">${action}</span>`
+                : `<span class="badge badge-neutral">${action}</span>`;
+            const pnlCell = isClose
+                ? `<td class="td-r ${pnlClass(pnl)}">${fmtPnl(pnl)}</td>`
+                : `<td class="td-r" style="color:var(--text-muted)">—</td>`;
+            return `<tr><td>${ts}</td><td>${t.symbol||t.market}</td><td>${actionBadge}</td><td><span class="badge ${t.side==='Buy'?'badge-up':'badge-down'}">${t.side}</span></td><td>$${parseFloat(t.price).toFixed(2)}</td><td>${parseFloat(t.quantity).toFixed(6)}</td>${pnlCell}</tr>`;
         }).join('');
     }
 
     function computeHistoryStats() {
         if (!allTrades.length) return;
-        let totalPnl = 0, wins = 0, vol = 0;
+        let totalPnl = 0, wins = 0, closeTrades = 0, vol = 0;
         allTrades.forEach(t => {
-            const p = t.pnl || 0;
-            totalPnl += p;
-            if (p > 0) wins++;
+            const action = t.action || t.close_type || t.trade_type || '';
+            const isClose = action.includes('Close') || action.includes('Stop') || action.includes('Emergency') || action.includes('Liquidat');
             vol += Math.abs(parseFloat(t.price) * parseFloat(t.quantity));
+            if (isClose) {
+                const p = t.pnl || 0;
+                totalPnl += p;
+                closeTrades++;
+                if (p > 0) wins++;
+            }
         });
-        const winRate = allTrades.length > 0 ? (wins / allTrades.length * 100).toFixed(1) : 0;
+        const winRate = closeTrades > 0 ? (wins / closeTrades * 100).toFixed(1) : '0.0';
         setPnl('hc-pnl', totalPnl);
         setVal('hc-winrate', winRate + '%');
         setVal('hc-volume', '$' + vol.toFixed(0));

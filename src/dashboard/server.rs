@@ -375,6 +375,12 @@ async fn strategy_update_handler(
     axum::Json(body): axum::Json<serde_json::Value>,
 ) -> impl IntoResponse {
     let mut ds = state.write().await;
+    // Allow switching strategy name
+    if let Some(name) = body.get("strategy").and_then(|s| s.as_str()) {
+        ds.strategy_name = name.to_string();
+        ds.strategy_config_changed = true;
+        info!("Strategy switched to: {}", name);
+    }
     if let Some(params) = body.get("params").and_then(|p| p.as_object()) {
         for (k, v) in params {
             ds.strategy_params.insert(
@@ -390,7 +396,8 @@ async fn strategy_update_handler(
     }
     axum::Json(serde_json::json!({
         "status": "ok",
-        "message": "Strategy params updated. Will apply on next grid reset cycle.",
+        "message": "Strategy config updated. Changes will apply shortly.",
+        "strategy": ds.strategy_name,
         "params": ds.strategy_params,
     }))
 }
