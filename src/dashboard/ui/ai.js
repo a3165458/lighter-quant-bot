@@ -4,13 +4,139 @@
 
     var lastBacktestResult = null;
 
-    // Show/hide custom URL field
-    document.getElementById('ai-provider').addEventListener('change', function() {
-        document.getElementById('ai-custom-url-group').style.display =
-            this.value === 'custom' ? 'block' : 'none';
+    // ── Provider presets: url + model defaults ──
+    var PRESETS = {
+        openai:   { url: 'https://api.openai.com/v1/chat/completions',          model: 'gpt-4o' },
+        zhipu:    { url: 'https://open.bigmodel.cn/api/paas/v4/chat/completions', model: 'glm-4-plus' },
+        deepseek: { url: 'https://api.deepseek.com/v1/chat/completions',        model: 'deepseek-chat' },
+        claude:   { url: 'https://api.anthropic.com/v1/messages',               model: 'claude-sonnet-4-20250514' },
+        groq:     { url: 'https://api.groq.com/openai/v1/chat/completions',     model: 'llama-3.3-70b-versatile' },
+        ollama:   { url: 'http://localhost:11434/v1/chat/completions',           model: 'llama3' },
+        custom:   { url: '',                                                     model: '' }
+    };
+
+    // ── LocalStorage persistence ──
+    var STORAGE_KEY = 'lighter-ai-settings';
+
+    function saveSettings() {
+        var settings = {
+            provider: document.getElementById('ai-provider').value,
+            url: document.getElementById('ai-url').value,
+            model: document.getElementById('ai-model').value,
+            key: document.getElementById('ai-key').value,
+            goal: document.getElementById('ai-goal').value,
+            maxTokens: document.getElementById('ai-max-tokens').value
+        };
+        try { localStorage.setItem(STORAGE_KEY, JSON.stringify(settings)); } catch(e) {}
+    }
+
+    function loadSettings() {
+        try {
+            var raw = localStorage.getItem(STORAGE_KEY);
+            if (!raw) return;
+            var s = JSON.parse(raw);
+            if (s.provider) document.getElementById('ai-provider').value = s.provider;
+            if (s.url) document.getElementById('ai-url').value = s.url;
+            if (s.model) document.getElementById('ai-model').value = s.model;
+            if (s.key) document.getElementById('ai-key').value = s.key;
+            if (s.goal) document.getElementById('ai-goal').value = s.goal;
+            if (s.maxTokens) document.getElementById('ai-max-tokens').value = s.maxTokens;
+        } catch(e) {}
+    }
+
+    // Load saved settings on startup
+    loadSettings();
+
+    // If URL/model are empty (first visit), apply preset
+    if (!document.getElementById('ai-url').value) {
+        var p = PRESETS[document.getElementById('ai-provider').value] || PRESETS.openai;
+        document.getElementById('ai-url').value = p.url;
+        document.getElementById('ai-model').value = p.model;
+    }
+
+    // Auto-save on any input change
+    ['ai-provider','ai-url','ai-model','ai-key','ai-goal','ai-max-tokens'].forEach(function(id) {
+        var el = document.getElementById(id);
+        if (el) el.addEventListener('change', saveSettings);
+        if (el) el.addEventListener('input', saveSettings);
     });
 
-    // Run backtest via server API
+    // Provider dropdown → fill URL + model from preset
+    document.getElementById('ai-provider').addEventListener('change', function() {
+        var preset = PRESETS[this.value];
+        if (preset) {
+            document.getElementById('ai-url').value = preset.url;
+            document.getElementById('ai-model').value = preset.model;
+            saveSettings();
+        }
+    });
+
+    // Toggle API key visibility
+    document.getElementById('toggle-key-vis').addEventListener('click', function() {
+        var inp = document.getElementById('ai-key');
+        var isPassword = inp.type === 'password';
+        inp.type = isPassword ? 'text' : 'password';
+        var icon = this.querySelector('[data-lucide]');
+        if (icon) {
+            icon.setAttribute('data-lucide', isPassword ? 'eye-off' : 'eye');
+            lucide.createIcons();
+        }
+    });
+
+    // ── Test AI connection ──
+    window.aiTestConnection = function() {
+        var btn = document.getElementById('btn-ai-test');
+        var url = document.getElementById('ai-url').value;
+        var model = document.getElementById('ai-model').value;
+        var apiKey = document.getElementById('ai-key').value;
+
+        if (!url) { alert('Please enter an API Base URL'); return; }
+        if (!model) { alert('Please enter a Model ID'); return; }
+
+        btn.disabled = true;
+        btn.textContent = '⏳...';
+
+        var provider = document.getElementById('ai-provider').value;
+        var isAnthropic = provider === 'claude' || url.includes('anthropic.com');
+
+        var headers, body;
+        if (isAnthropic) {
+            headers = {
+                'x-api-key': apiKey,
+                'anthropic-version': '2023-06-01',
+                'Content-Type': 'application/json',
+                'anthropic-dangerous-direct-browser-access': 'true'
+            };
+            body = { model: model, max_tokens: 20, messages: [{role:'user',content:'Hi, respond with just "OK"'}] };
+        } else {
+            headers = { 'Authorization': 'Bearer ' + apiKey, 'Content-Type': 'application/json' };
+            body = { model: model, messages: [{role:'user',content:'Hi, respond with just "OK"'}], max_tokens: 20 };
+        }
+
+        fetch(url, { method: 'POST', headers: headers, body: JSON.stringify(body) })
+        .then(function(r) {
+            if (!r.ok) return r.text().then(function(t) { throw new Error('HTTP ' + r.status + ': ' + t.substring(0, 200)); });
+            return r.json();
+        })
+        .then(function(d) {
+            btn.disabled = false;
+            btn.textContent = '🔗 Test';
+            var reply = '';
+            if (isAnthropic && d.content && d.content[0]) {
+                reply = d.content[0].text || '';
+            } else if (d.choices && d.choices[0]) {
+                reply = (d.choices[0].message || {}).content || '';
+            }
+            alert('✅ Connection OK!\nModel: ' + model + '\nResponse: ' + reply.substring(0, 100));
+        })
+        .catch(function(e) {
+            btn.disabled = false;
+            btn.textContent = '🔗 Test';
+            alert('❌ Connection failed:\n' + e.message);
+        });
+    };
+
+    // ── Run backtest via server API ──
     window.runBacktest = function() {
         var btn = document.getElementById('btn-run-backtest');
         btn.disabled = true;
@@ -34,10 +160,7 @@
         .then(function(data) {
             btn.disabled = false;
             btn.textContent = '▶ Run Backtest';
-            if (data.error) {
-                showError(data.error);
-                return;
-            }
+            if (data.error) { showError(data.error); return; }
             lastBacktestResult = data;
             renderResults(data);
         })
@@ -52,8 +175,7 @@
         document.getElementById('results-empty').style.display = 'none';
         var content = document.getElementById('results-content');
         content.style.display = 'block';
-        content.innerHTML = '<div class="result-card"><p class="negative" style="padding:12px">' +
-            '❌ ' + msg + '</p></div>';
+        content.innerHTML = '<div class="result-card"><p class="negative" style="padding:12px">❌ ' + msg + '</p></div>';
     }
 
     function renderResults(data) {
@@ -68,8 +190,7 @@
         var html = '<div class="result-card">' +
             '<div class="result-header">' +
             '<div class="result-title">Backtest: ' + (data.strategy || 'grid') + ' on ' + (data.data_file || '-') + '</div>' +
-            '<span class="result-badge ' + badgeClass + '">' + badgeText + '</span>' +
-            '</div>' +
+            '<span class="result-badge ' + badgeClass + '">' + badgeText + '</span></div>' +
             '<div class="metrics-grid">' +
             metric('Total Return', fmtPct(totalReturn), totalReturn >= 0) +
             metric('Sharpe Ratio', (data.sharpe_ratio || 0).toFixed(2), data.sharpe_ratio >= 1) +
@@ -83,27 +204,24 @@
             metric('Avg Loss', '$' + (data.avg_loss || 0).toFixed(2), false) +
             '</div>';
 
-        // Equity chart
         var eqCurve = (data.equity_curve || []).map(function(p) { return p.v || p; });
         if (eqCurve.length > 1) {
             html += '<div class="chart-container"><canvas id="bt-chart" class="chart-canvas"></canvas></div>';
         }
 
-        // Trade log
         if (data.trades && data.trades.length > 0) {
             html += '<div style="margin-top:12px"><table><thead><tr>' +
-                '<th>#</th><th>Time</th><th>Side</th><th>Price</th><th>Size</th><th>PnL</th>' +
-                '</tr></thead><tbody>';
+                '<th>#</th><th>Time</th><th>Side</th><th>Price</th><th>Size</th><th>PnL</th></tr></thead><tbody>';
             var trades = data.trades.slice(-30);
             for (var i = 0; i < trades.length; i++) {
                 var t = trades[i];
                 var pnlCls = (t.pnl || 0) >= 0 ? 'positive' : 'negative';
-                html += '<tr><td>' + (i + 1) + '</td>' +
+                html += '<tr><td>' + (i+1) + '</td>' +
                     '<td>' + (t.timestamp || '-') + '</td>' +
                     '<td>' + (t.side || '-') + '</td>' +
-                    '<td>$' + Number(t.price || 0).toFixed(2) + '</td>' +
-                    '<td>' + Number(t.quantity || 0).toFixed(6) + '</td>' +
-                    '<td class="' + pnlCls + '">$' + Number(t.pnl || 0).toFixed(2) + '</td></tr>';
+                    '<td>$' + Number(t.price||0).toFixed(2) + '</td>' +
+                    '<td>' + Number(t.quantity||0).toFixed(6) + '</td>' +
+                    '<td class="' + pnlCls + '">$' + Number(t.pnl||0).toFixed(2) + '</td></tr>';
             }
             html += '</tbody></table></div>';
         }
@@ -111,7 +229,6 @@
         html += '</div>';
         content.innerHTML = html;
 
-        // Draw equity chart
         if (eqCurve.length > 1) {
             setTimeout(function() { drawChart('bt-chart', eqCurve); }, 50);
         }
@@ -142,7 +259,6 @@
         var maxV = Math.max.apply(null, vals) * 1.002;
         var range = maxV - minV || 1;
 
-        // Grid
         var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
         ctx.strokeStyle = isDark ? '#1B254B' : '#E9EDF7';
         ctx.lineWidth = 1;
@@ -168,7 +284,6 @@
         ctx.fillStyle = fillColor;
         ctx.fill();
 
-        // Labels
         ctx.fillStyle = isDark ? '#56607B' : '#A3AED0';
         ctx.font = '10px sans-serif';
         ctx.textAlign = 'right';
@@ -176,12 +291,17 @@
         ctx.fillText('$' + minV.toFixed(0), w - 4, h * 0.95);
     }
 
-    // AI Optimization
+    // ── AI Optimization ──
     window.aiOptimize = function() {
         var apiKey = document.getElementById('ai-key').value;
-        if (!apiKey) {
-            alert('Please enter an AI API key');
-            return;
+        var apiUrl = document.getElementById('ai-url').value;
+        var modelId = document.getElementById('ai-model').value;
+        var maxTokens = parseInt(document.getElementById('ai-max-tokens').value) || 800;
+
+        if (!apiUrl) { alert('Please enter an API Base URL'); return; }
+        if (!modelId) { alert('Please enter a Model ID'); return; }
+        if (!apiKey && document.getElementById('ai-provider').value !== 'ollama') {
+            alert('Please enter an API Key'); return;
         }
 
         var btn = document.getElementById('btn-ai-optimize');
@@ -191,16 +311,19 @@
         log.style.display = 'block';
         log.textContent = '';
 
-        function addAiLog(msg) {
+        function addLog(msg) {
             log.textContent += '> ' + msg + '\n';
             log.scrollTop = log.scrollHeight;
         }
 
-        addAiLog('Starting AI optimization...');
+        var provider = document.getElementById('ai-provider').value;
+        var isAnthropic = provider === 'claude' || apiUrl.includes('anthropic.com');
 
-        // Step 1: run baseline backtest
+        addLog('Provider: ' + provider + ' | Model: ' + modelId);
+        addLog('Starting AI optimization...');
+
         var baseParams = document.getElementById('bt-params').value || 'grid_count=10,investment=8,deviation=0.012';
-        addAiLog('Running baseline backtest with: ' + baseParams);
+        addLog('Running baseline backtest: ' + baseParams);
 
         var payload = {
             strategy: document.getElementById('bt-strategy').value,
@@ -218,59 +341,54 @@
         })
         .then(function(r) { return r.json(); })
         .then(function(baseResult) {
-            addAiLog('Baseline: Return=' + (baseResult.total_return_pct || 0).toFixed(2) + '%, Sharpe=' + (baseResult.sharpe_ratio || 0).toFixed(2));
-            addAiLog('Consulting AI for parameter suggestions...');
+            addLog('Baseline: Return=' + (baseResult.total_return_pct||0).toFixed(2) + '%, Sharpe=' + (baseResult.sharpe_ratio||0).toFixed(2));
+            addLog('Consulting AI (' + modelId + ') for suggestions...');
 
-            // Step 2: Call AI API
-            var provider = document.getElementById('ai-provider').value;
             var goal = document.getElementById('ai-goal').value;
-            var goalText = {sharpe: 'Sharpe Ratio', 'return': 'Total Return', drawdown: 'Min Max Drawdown', balanced: 'Balanced Risk/Return'}[goal];
-
+            var goalText = {sharpe:'Sharpe Ratio','return':'Total Return',drawdown:'Min Max Drawdown',balanced:'Balanced Risk/Return'}[goal];
             var prompt = buildAIPrompt(baseResult, baseParams, goalText);
-            callAI(provider, apiKey, prompt)
-            .then(function(suggestion) {
-                addAiLog('AI response received');
-                addAiLog(suggestion.substring(0, 200) + '...');
 
-                // Parse suggested params from AI response
+            return callAI(apiUrl, modelId, apiKey, prompt, maxTokens, isAnthropic)
+            .then(function(suggestion) {
+                addLog('AI response received');
+                addLog(suggestion.substring(0, 300) + (suggestion.length > 300 ? '...' : ''));
+
                 var suggestedParams = parseSuggestedParams(suggestion);
                 if (suggestedParams) {
-                    addAiLog('Suggested params: ' + suggestedParams);
+                    addLog('Suggested params: ' + suggestedParams);
                     document.getElementById('bt-params').value = suggestedParams;
-                    addAiLog('Running backtest with AI-suggested params...');
+                    addLog('Running backtest with AI params...');
 
                     payload.params = suggestedParams;
                     return fetch('/api/backtest', {
                         method: 'POST',
                         headers: {'Content-Type': 'application/json'},
                         body: JSON.stringify(payload)
-                    }).then(function(r) { return r.json(); });
+                    }).then(function(r) { return r.json(); })
+                    .then(function(newResult) {
+                        return { base: baseResult, optimized: newResult };
+                    });
                 } else {
-                    addAiLog('Could not parse params from AI response');
-                    return null;
+                    addLog('⚠ Could not parse params from AI response');
+                    return { base: baseResult, optimized: null };
                 }
-            })
-            .then(function(newResult) {
-                btn.disabled = false;
-                btn.textContent = '🤖 AI Optimize Parameters';
-                if (newResult) {
-                    addAiLog('AI Optimized: Return=' + (newResult.total_return_pct || 0).toFixed(2) + '%, Sharpe=' + (newResult.sharpe_ratio || 0).toFixed(2));
-                    var improve = (newResult.total_return_pct || 0) - (baseResult.total_return_pct || 0);
-                    addAiLog('Improvement: ' + (improve >= 0 ? '+' : '') + improve.toFixed(2) + '%');
-                    lastBacktestResult = newResult;
-                    renderResults(newResult);
-                }
-            })
-            .catch(function(e) {
-                btn.disabled = false;
-                btn.textContent = '🤖 AI Optimize Parameters';
-                addAiLog('Error: ' + e.message);
             });
+        })
+        .then(function(results) {
+            btn.disabled = false;
+            btn.textContent = '🤖 AI Optimize Parameters';
+            if (results && results.optimized) {
+                addLog('AI Optimized: Return=' + (results.optimized.total_return_pct||0).toFixed(2) + '%, Sharpe=' + (results.optimized.sharpe_ratio||0).toFixed(2));
+                var improve = (results.optimized.total_return_pct||0) - (results.base.total_return_pct||0);
+                addLog((improve >= 0 ? '📈' : '📉') + ' Improvement: ' + (improve >= 0 ? '+' : '') + improve.toFixed(2) + '%');
+                lastBacktestResult = results.optimized;
+                renderResults(results.optimized);
+            }
         })
         .catch(function(e) {
             btn.disabled = false;
             btn.textContent = '🤖 AI Optimize Parameters';
-            addAiLog('Backtest error: ' + e.message);
+            addLog('❌ Error: ' + e.message);
         });
     };
 
@@ -278,11 +396,11 @@
         return 'You are a quantitative trading strategy optimizer. I run a grid trading strategy on crypto (BTC/ETH perpetuals).\n\n' +
             'Current parameters: ' + params + '\n' +
             'Backtest results:\n' +
-            '- Total return: ' + (result.total_return_pct || 0).toFixed(2) + '%\n' +
-            '- Sharpe ratio: ' + (result.sharpe_ratio || 0).toFixed(2) + '\n' +
-            '- Max drawdown: ' + (result.max_drawdown_pct || 0).toFixed(2) + '%\n' +
-            '- Win rate: ' + (result.win_rate_pct || 0).toFixed(1) + '%\n' +
-            '- Total trades: ' + (result.total_trades || 0) + '\n\n' +
+            '- Total return: ' + (result.total_return_pct||0).toFixed(2) + '%\n' +
+            '- Sharpe ratio: ' + (result.sharpe_ratio||0).toFixed(2) + '\n' +
+            '- Max drawdown: ' + (result.max_drawdown_pct||0).toFixed(2) + '%\n' +
+            '- Win rate: ' + (result.win_rate_pct||0).toFixed(1) + '%\n' +
+            '- Total trades: ' + (result.total_trades||0) + '\n\n' +
             'Optimization goal: ' + goalText + '\n\n' +
             'Available parameters:\n' +
             '- grid_count (integer 4-20): number of grid levels each side\n' +
@@ -293,38 +411,44 @@
             'Then explain your reasoning briefly.';
     }
 
-    function callAI(provider, apiKey, prompt) {
-        var url, body, headers;
+    function callAI(url, model, apiKey, prompt, maxTokens, isAnthropic) {
+        var headers, body;
 
-        if (provider === 'openai') {
-            url = 'https://api.openai.com/v1/chat/completions';
-            body = {model: 'gpt-4', messages: [{role: 'user', content: prompt}], max_tokens: 500};
-            headers = {'Authorization': 'Bearer ' + apiKey, 'Content-Type': 'application/json'};
-        } else if (provider === 'zhipu') {
-            url = 'https://open.bigmodel.cn/api/paas/v4/chat/completions';
-            body = {model: 'glm-4', messages: [{role: 'user', content: prompt}], max_tokens: 500};
-            headers = {'Authorization': 'Bearer ' + apiKey, 'Content-Type': 'application/json'};
+        if (isAnthropic) {
+            headers = {
+                'x-api-key': apiKey,
+                'anthropic-version': '2023-06-01',
+                'Content-Type': 'application/json',
+                'anthropic-dangerous-direct-browser-access': 'true'
+            };
+            body = { model: model, max_tokens: maxTokens, messages: [{role:'user',content:prompt}] };
         } else {
-            url = document.getElementById('ai-url').value;
-            body = {model: 'default', messages: [{role: 'user', content: prompt}], max_tokens: 500};
-            headers = {'Authorization': 'Bearer ' + apiKey, 'Content-Type': 'application/json'};
+            headers = { 'Content-Type': 'application/json' };
+            if (apiKey) headers['Authorization'] = 'Bearer ' + apiKey;
+            body = { model: model, messages: [{role:'user',content:prompt}], max_tokens: maxTokens };
         }
 
-        return fetch(url, {method: 'POST', headers: headers, body: JSON.stringify(body)})
-            .then(function(r) { return r.json(); })
+        return fetch(url, { method: 'POST', headers: headers, body: JSON.stringify(body) })
+            .then(function(r) {
+                if (!r.ok) return r.text().then(function(t) { throw new Error('HTTP ' + r.status + ': ' + t.substring(0, 300)); });
+                return r.json();
+            })
             .then(function(d) {
+                // Anthropic format
+                if (isAnthropic && d.content && d.content[0]) {
+                    return d.content[0].text || '';
+                }
+                // OpenAI-compatible format
                 if (d.choices && d.choices[0] && d.choices[0].message) {
                     return d.choices[0].message.content;
                 }
-                throw new Error('Unexpected AI response format: ' + JSON.stringify(d).substring(0, 200));
+                throw new Error('Unexpected response format: ' + JSON.stringify(d).substring(0, 300));
             });
     }
 
     function parseSuggestedParams(text) {
-        // Look for PARAMS: grid_count=X,investment=Y,deviation=Z
         var match = text.match(/PARAMS:\s*([\w=.,]+)/i);
         if (match) return match[1].trim();
-        // Fallback: try to find key=value patterns
         var gc = text.match(/grid_count\s*=\s*(\d+)/);
         var inv = text.match(/investment\s*=\s*([\d.]+)/);
         var dev = text.match(/deviation\s*=\s*([\d.]+)/);

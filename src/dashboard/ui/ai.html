@@ -216,20 +216,33 @@ tr:hover td { background:var(--bg-input); }
     <div class="ai-section">
       <div class="panel-title"><i data-lucide="sparkles" style="width:16px;height:16px;"></i> AI Strategy Advisor</div>
       <div class="form-group">
-        <label class="form-label">AI Provider</label>
+        <label class="form-label">AI Provider (Preset)</label>
         <select class="form-select" id="ai-provider">
-          <option value="openai">OpenAI (GPT-4)</option>
-          <option value="zhipu">ZhiPu (GLM-4)</option>
-          <option value="custom">Custom API</option>
+          <option value="openai">OpenAI</option>
+          <option value="zhipu">ZhiPu (智谱)</option>
+          <option value="deepseek">DeepSeek</option>
+          <option value="claude">Claude (Anthropic)</option>
+          <option value="groq">Groq</option>
+          <option value="ollama">Ollama (Local)</option>
+          <option value="custom">Custom / Other</option>
         </select>
       </div>
       <div class="form-group">
-        <label class="form-label">API Key</label>
-        <input type="password" class="form-input" id="ai-key" placeholder="sk-...">
+        <label class="form-label">API Base URL</label>
+        <input type="text" class="form-input" id="ai-url" placeholder="https://api.openai.com/v1/chat/completions">
       </div>
-      <div class="form-group" id="ai-custom-url-group" style="display:none">
-        <label class="form-label">Custom API URL</label>
-        <input type="text" class="form-input" id="ai-url" placeholder="https://api.example.com/v1/chat/completions">
+      <div class="form-group">
+        <label class="form-label">Model ID</label>
+        <input type="text" class="form-input" id="ai-model" placeholder="gpt-4o">
+      </div>
+      <div class="form-group">
+        <label class="form-label">API Key</label>
+        <div style="position:relative">
+          <input type="password" class="form-input" id="ai-key" placeholder="sk-..." style="padding-right:40px">
+          <button type="button" id="toggle-key-vis" style="position:absolute;right:10px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--text-sub);cursor:pointer;padding:4px;" title="Show/hide key">
+            <i data-lucide="eye" style="width:16px;height:16px;"></i>
+          </button>
+        </div>
       </div>
       <div class="form-group">
         <label class="form-label">Optimization Goal</label>
@@ -240,7 +253,15 @@ tr:hover td { background:var(--bg-input); }
           <option value="balanced">Balanced (Return + Risk)</option>
         </select>
       </div>
-      <button class="btn btn-ai" id="btn-ai-optimize" onclick="aiOptimize()">🤖 AI Optimize Parameters</button>
+      <div class="form-group">
+        <label class="form-label">Max Tokens</label>
+        <input type="number" class="form-input" id="ai-max-tokens" value="800" min="100" max="4096" step="100">
+      </div>
+      <div style="display:flex;gap:8px;margin-bottom:10px">
+        <button class="btn btn-ai" id="btn-ai-optimize" onclick="aiOptimize()" style="flex:1">🤖 AI Optimize Parameters</button>
+        <button class="btn" id="btn-ai-test" onclick="aiTestConnection()" style="flex:0 0 auto;background:var(--bg-input);color:var(--text-main);border:1px solid var(--border);width:120px" title="Test API connection">🔗 Test</button>
+      </div>
+      <div style="font-size:11px;color:var(--text-sub);margin-bottom:8px">💡 Settings auto-saved to browser. API Key stays local — never sent to our server.</div>
       <div class="log-area" id="ai-log" style="display:none"></div>
     </div>
   </div>
