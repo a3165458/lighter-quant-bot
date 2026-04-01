@@ -259,6 +259,41 @@ impl RiskManager {
         signals
     }
 
+    /// Update risk parameters at runtime from dashboard
+    pub fn update_params(
+        &mut self,
+        max_drawdown_pct: Option<f64>,
+        daily_loss_limit_pct: Option<f64>,
+        max_leverage: Option<f64>,
+        position_stop_loss_pct: Option<f64>,
+        position_take_profit_pct: Option<f64>,
+    ) {
+        if let Some(v) = max_drawdown_pct { self.max_drawdown_pct = v / 100.0; }
+        if let Some(v) = daily_loss_limit_pct { self.daily_loss_limit_pct = v / 100.0; }
+        if let Some(v) = max_leverage { self.max_leverage = v; }
+        if let Some(v) = position_stop_loss_pct { self.position_stop_loss_pct = v / 100.0; }
+        if let Some(v) = position_take_profit_pct { self.position_take_profit_pct = v / 100.0; }
+        info!("🔧 Risk params updated: drawdown={:.1}%, daily_loss={:.1}%, leverage={:.0}x, sl={:.1}%, tp={:.1}%",
+            self.max_drawdown_pct * 100.0, self.daily_loss_limit_pct * 100.0, self.max_leverage,
+            self.position_stop_loss_pct * 100.0, self.position_take_profit_pct * 100.0);
+    }
+
+    /// Get current risk config as a serializable map
+    pub fn get_config(&self) -> serde_json::Value {
+        serde_json::json!({
+            "max_drawdown_pct": (self.max_drawdown_pct * 100.0),
+            "daily_loss_limit_pct": (self.daily_loss_limit_pct * 100.0),
+            "max_leverage": self.max_leverage,
+            "position_stop_loss_pct": (self.position_stop_loss_pct * 100.0),
+            "position_take_profit_pct": (self.position_take_profit_pct * 100.0),
+        })
+    }
+
+    /// Get current max leverage setting
+    pub fn max_leverage(&self) -> f64 {
+        self.max_leverage
+    }
+
     /// 获取当前风控状态
     pub fn status(&self) -> RiskStatus {
         let drawdown = (self.initial_equity - self.current_equity) / self.initial_equity;

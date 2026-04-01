@@ -727,13 +727,55 @@ tr:hover td { background:var(--bg-card-hover); }
         <div class="info-row"><span class="info-k">Exchange</span><span class="info-v">Lighter.xyz (mainnet)</span></div>
       </div>
       <div class="card">
-        <div class="card-header"><div class="card-title" data-i18n="riskLimits">Risk Limits</div></div>
-        <div class="info-row"><span class="info-k" data-i18n="maxDrawdown">Max Drawdown</span><span class="info-v">10%</span></div>
-        <div class="info-row"><span class="info-k" data-i18n="dailyLoss">Daily Loss Limit</span><span class="info-v">5%</span></div>
-        <div class="info-row"><span class="info-k">Stop Loss</span><span class="info-v">3%</span></div>
-        <div class="info-row"><span class="info-k">Take Profit</span><span class="info-v">5%</span></div>
-        <div class="info-row"><span class="info-k">Max Leverage</span><span class="info-v">5x</span></div>
-        <div class="info-row"><span class="info-k">Max Orders</span><span class="info-v">8</span></div>
+        <div class="card-header"><div class="card-title" data-i18n="riskLimits">Risk &amp; Leverage Controls</div></div>
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+          <div class="form-group">
+            <label class="form-label">Leverage Limit</label>
+            <div style="display:flex;align-items:center;gap:6px;">
+              <input type="number" class="form-input" id="rc-leverage-limit" value="3" min="1" max="20" step="0.5" style="width:80px;">
+              <span style="color:var(--text-sub);font-size:12px;">&times;</span>
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Max Leverage (Risk)</label>
+            <div style="display:flex;align-items:center;gap:6px;">
+              <input type="number" class="form-input" id="rc-max-leverage" value="5" min="1" max="50" step="1" style="width:80px;">
+              <span style="color:var(--text-sub);font-size:12px;">&times;</span>
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Stop Loss</label>
+            <div style="display:flex;align-items:center;gap:6px;">
+              <input type="number" class="form-input" id="rc-stop-loss" value="3" min="0.5" max="50" step="0.5" style="width:80px;">
+              <span style="color:var(--text-sub);font-size:12px;">%</span>
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Take Profit</label>
+            <div style="display:flex;align-items:center;gap:6px;">
+              <input type="number" class="form-input" id="rc-take-profit" value="5" min="0.5" max="100" step="0.5" style="width:80px;">
+              <span style="color:var(--text-sub);font-size:12px;">%</span>
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="form-label" data-i18n="maxDrawdown">Max Drawdown</label>
+            <div style="display:flex;align-items:center;gap:6px;">
+              <input type="number" class="form-input" id="rc-max-drawdown" value="10" min="1" max="50" step="1" style="width:80px;">
+              <span style="color:var(--text-sub);font-size:12px;">%</span>
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="form-label" data-i18n="dailyLoss">Daily Loss Limit</label>
+            <div style="display:flex;align-items:center;gap:6px;">
+              <input type="number" class="form-input" id="rc-daily-loss" value="5" min="1" max="50" step="1" style="width:80px;">
+              <span style="color:var(--text-sub);font-size:12px;">%</span>
+            </div>
+          </div>
+        </div>
+        <button class="btn btn-primary" id="btn-save-risk" style="width:100%; margin-top:16px;">
+          <i data-lucide="shield" style="width:14px;height:14px;margin-right:6px;vertical-align:middle;"></i>Save Risk Settings
+        </button>
+        <div class="cfg-msg" id="rc-save-msg" style="margin-top:8px;"></div>
       </div>
       <div class="card">
         <div class="card-header"><div class="card-title" data-i18n="theme">Theme</div></div>

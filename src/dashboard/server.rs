@@ -91,6 +91,10 @@ pub struct DashboardState {
     pub trading_paused: bool,               // Pause all trading signals
     pub cancel_all_requested: bool,         // Request to cancel all open orders
     pub available_markets: Vec<(u32, String)>, // All known markets: (id, symbol)
+    // Risk config (runtime-editable from dashboard)
+    pub risk_config: serde_json::Value,               // Cached risk config for display
+    pub risk_update_requested: Option<serde_json::Value>, // Pending risk update
+    pub leverage_limit: f64,                          // Runtime leverage limit (used by main loop)
 }
 
 impl DashboardState {
@@ -170,6 +174,8 @@ pub async fn start_with_state(host: &str, port: u16, state: SharedDashboardState
         .route("/api/trading/pause", post(trading_pause_handler))
         .route("/api/trading/resume", post(trading_resume_handler))
         .route("/api/trading/cancel-all", post(cancel_all_handler))
+        .route("/api/risk/config", get(risk_config_get_handler))
+        .route("/api/risk/config", post(risk_config_update_handler))
         .layer(CorsLayer::permissive())
         .with_state(state);
 
@@ -561,5 +567,39 @@ async fn cancel_all_handler(
     axum::Json(serde_json::json!({
         "status": "ok",
         "message": "Cancel all orders requested. Will execute on next cycle.",
+    }))
+}
+
+async fn risk_config_get_handler(
+    State(state): State<SharedDashboardState>,
+) -> axum::Json<serde_json::Value> {
+    let ds = state.read().await;
+    axum::Json(ds.risk_config.clone())
+}
+
+async fn risk_config_update_handler(
+    State(state): State<SharedDashboardState>,
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> axum::Json<serde_json::Value> {
+    let mut ds = state.write().await;
+    // Update leverage_limit if provided
+    if let Some(v) = body.get("leverage_limit").and_then(|v| v.as_f64()) {
+        ds.leverage_limit = v;
+    }
+    // Store the update request for main loop to pick up
+    ds.risk_update_requested = Some(body.clone());
+    // Update cached config
+    let fields = ["max_drawdown_pct", "daily_loss_limit_pct", "max_leverage",
+                   "position_stop_loss_pct", "position_take_profit_pct", "leverage_limit"];
+    for field in &fields {
+        if let Some(v) = body.get(*field) {
+            ds.risk_config[field] = v.clone();
+        }
+    }
+    info!("🔧 Risk config updated from dashboard: {}", body);
+    axum::Json(serde_json::json!({
+        "status": "ok",
+        "message": "Risk parameters updated",
+        "config": ds.risk_config.clone(),
     }))
 }

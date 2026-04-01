@@ -1047,11 +1047,63 @@
         }
     };
 
+    // ── Risk Config ──
+    function loadRiskConfig() {
+        fetch('/api/risk/config').then(r => r.json()).then(data => {
+            if (data.leverage_limit !== undefined) setRcInput('rc-leverage-limit', data.leverage_limit);
+            if (data.max_leverage !== undefined) setRcInput('rc-max-leverage', data.max_leverage);
+            if (data.position_stop_loss_pct !== undefined) setRcInput('rc-stop-loss', data.position_stop_loss_pct);
+            if (data.position_take_profit_pct !== undefined) setRcInput('rc-take-profit', data.position_take_profit_pct);
+            if (data.max_drawdown_pct !== undefined) setRcInput('rc-max-drawdown', data.max_drawdown_pct);
+            if (data.daily_loss_limit_pct !== undefined) setRcInput('rc-daily-loss', data.daily_loss_limit_pct);
+        }).catch(() => {});
+    }
+
+    function setRcInput(id, val) {
+        const el = $(id);
+        if (el) el.value = val;
+    }
+
+    // Save risk config
+    if ($('btn-save-risk')) {
+        $('btn-save-risk').addEventListener('click', () => {
+            const body = {
+                leverage_limit: parseFloat($('rc-leverage-limit').value) || 3,
+                max_leverage: parseFloat($('rc-max-leverage').value) || 5,
+                position_stop_loss_pct: parseFloat($('rc-stop-loss').value) || 3,
+                position_take_profit_pct: parseFloat($('rc-take-profit').value) || 5,
+                max_drawdown_pct: parseFloat($('rc-max-drawdown').value) || 10,
+                daily_loss_limit_pct: parseFloat($('rc-daily-loss').value) || 5,
+            };
+            const msgEl = $('rc-save-msg');
+            fetch('/api/risk/config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            }).then(r => r.json()).then(data => {
+                if (data.status === 'ok') {
+                    msgEl.textContent = '✓ Risk settings saved successfully';
+                    msgEl.style.color = 'var(--success)';
+                    addNotification('trade', 'Risk settings updated');
+                    addLog('i', 'Risk config updated: leverage=' + body.leverage_limit + 'x, SL=' + body.position_stop_loss_pct + '%, TP=' + body.position_take_profit_pct + '%');
+                } else {
+                    msgEl.textContent = '✗ ' + (data.message || 'Failed');
+                    msgEl.style.color = 'var(--danger)';
+                }
+                setTimeout(() => msgEl.textContent = '', 4000);
+            }).catch(e => {
+                msgEl.textContent = '✗ Network error';
+                msgEl.style.color = 'var(--danger)';
+            });
+        });
+    }
+
     // ── Init ──
     addLog('i', 'Dashboard initializing...');
     applyI18n();
     connect();
     setTimeout(initCharts, 500);
     setTimeout(loadTradingControls, 1000);
+    setTimeout(loadRiskConfig, 1200);
 
 })();

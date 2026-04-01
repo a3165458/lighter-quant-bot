@@ -258,6 +258,16 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
             (0, "ETH".to_string()),
             (1, "BTC".to_string()),
         ],
+        risk_config: serde_json::json!({
+            "max_drawdown_pct": 10.0,
+            "daily_loss_limit_pct": 5.0,
+            "max_leverage": 5.0,
+            "position_stop_loss_pct": 3.0,
+            "position_take_profit_pct": 5.0,
+            "leverage_limit": 3.0,
+        }),
+        risk_update_requested: None,
+        leverage_limit: 3.0,
     }));
 
     // Restore persistent PnL data from disk
@@ -284,6 +294,13 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
     {
         let mut rm = risk_manager.lock().await;
         rm.update_equity(equity);
+    }
+    // Sync initial risk config from RiskManager to DashboardState
+    {
+        let rm = risk_manager.lock().await;
+        let mut ds = dash_state.write().await;
+        ds.risk_config = rm.get_config();
+        ds.risk_config["leverage_limit"] = serde_json::json!(ds.leverage_limit);
     }
 
     // Initialize strategy (wrapped in Arc<RwLock> for runtime switching)
@@ -904,6 +921,21 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
             ds.cancel_all_requested = false;
         }
 
+        // Check for risk config updates from dashboard
+        {
+            let mut ds = dash_state.write().await;
+            if let Some(update) = ds.risk_update_requested.take() {
+                let mut rm = risk_manager.lock().await;
+                rm.update_params(
+                    update.get("max_drawdown_pct").and_then(|v| v.as_f64()),
+                    update.get("daily_loss_limit_pct").and_then(|v| v.as_f64()),
+                    update.get("max_leverage").and_then(|v| v.as_f64()),
+                    update.get("position_stop_loss_pct").and_then(|v| v.as_f64()),
+                    update.get("position_take_profit_pct").and_then(|v| v.as_f64()),
+                );
+            }
+        }
+
         // Block all trading when paused from dashboard
         if is_paused {
             continue;
@@ -946,8 +978,12 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
                         continue;
                     }
 
-                    // Leverage limit: block new position-increasing signals if leverage > 3x
-                    if current_leverage > 3.0 {
+                    // Leverage limit: block new position-increasing signals if leverage > limit
+                    let leverage_limit = {
+                        let ds = dash_state.read().await;
+                        ds.leverage_limit
+                    };
+                    if current_leverage > leverage_limit {
                         let existing_side: Option<String> = {
                             let ds = dash_state.read().await;
                             ds.positions.iter()
@@ -960,8 +996,8 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
                             _ => false,
                         };
                         if would_increase {
-                            info!("⚠️ Leverage {:.1}x > 3x, blocking same-direction signal: {} {:?}",
-                                current_leverage, signal.symbol, signal.side);
+                            info!("⚠️ Leverage {:.1}x > {:.1}x limit, blocking same-direction signal: {} {:?}",
+                                current_leverage, leverage_limit, signal.symbol, signal.side);
                             continue;
                         }
                     }
