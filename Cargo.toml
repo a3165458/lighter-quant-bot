@@ -12,7 +12,7 @@ futures = "0.3"
 futures-util = "0.3"
 
 # HTTP客户端
-reqwest = { version = "0.11", features = ["json", "stream"] }
+reqwest = { version = "0.11", features = ["json", "stream", "gzip", "deflate", "multipart"] }
 
 # 序列化/反序列化
 serde = { version = "1.0", features = ["derive"] }
@@ -38,6 +38,9 @@ tracing-appender = "0.2"
 hmac = "0.12"
 sha2 = "0.10"
 hex = "0.4"
+
+# FFI dynamic loading
+libloading = "0.8"
 
 # 异步特征
 async-trait = "0.1"

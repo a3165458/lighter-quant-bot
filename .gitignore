@@ -14,7 +14,6 @@ logs/
 
 # 回测结果
 backtests/results/
-*.html
 *.csv
 
 # IDE配置
@@ -33,3 +32,17 @@ temp/
 *~
 *.bak
 *.old
+
+# 运行时数据
+data/
+
+# 二进制依赖
+lighter-signer.so
+*.so
+
+# PM2 配置 (含本地路径)
+ecosystem.config.js
+ecosystem.dashboard.config.js
+
+# 启动脚本 (含本地路径)
+start.sh

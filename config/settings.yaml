@@ -1,97 +1,91 @@
-# Lighter交易所配置
+# Lighter.xyz Trading Bot Configuration
 lighter:
-  # API密钥（通过环境变量 LIGHTER_API_KEY 和 LIGHTER_SECRET_KEY 设置）
-  api_key: "${LIGHTER_API_KEY}"
-  secret_key: "${LIGHTER_SECRET_KEY}"
-  
-  # 网络配置
-  networks:
-    testnet:
-      rest_url: "https://testnet.lighter.xyz/api/v1"
-      ws_url: "wss://testnet.lighter.xyz/ws"
-    mainnet:
-      rest_url: "https://api.lighter.xyz/api/v1"
-      ws_url: "wss://lighter.xyz/ws"
-  
-  # 连接参数
+  # Network configuration
+  rest_url: "https://mainnet.zklighter.elliot.ai"
+  ws_url: "wss://mainnet.zklighter.elliot.ai/stream"
+  chain_id: 304
+
+  # Connection parameters
   connection:
     timeout_ms: 10000
     retry_count: 5
-    retry_delay_ms: 1000
-    heartbeat_interval_ms: 30000
+    retry_delay_ms: 2000
+    heartbeat_interval_ms: 60000
 
-# 交易配置
+# Trading configuration
 trading:
-  # 交易对
-  symbols: ["BTCUSDT", "ETHUSDT"]
-  
-  # 策略配置
+  # Markets to trade (market_id: 0=ETH, 1=BTC)
+  # GLM-5 analysis: ETH WinRate=20%, MaxDD=34% → removed
+  markets: [1]
+
+  # Maximum number of open orders at any time
+  max_open_orders: 8
+
+  # Strategy configuration
   strategies:
     grid_trading:
       enabled: true
-      grid_count: 20
-      investment_per_grid: 50
-      price_deviation: 0.015
-    
+      grid_count: 6
+      investment_per_grid: 8
+      price_deviation: 0.012
+
     trend_following:
       enabled: false
       fast_ma: 7
       slow_ma: 21
       stop_loss: 0.03
       take_profit: 0.06
-  
-  # 仓位管理
-  position:
-    max_single_trade_percent: 5
-    max_total_position_percent: 40
-    risk_per_trade_percent: 1
 
-# 风控配置
+  # Position management
+  position:
+    max_single_trade_percent: 8
+    max_total_position_percent: 40
+    risk_per_trade_percent: 1.5
+
+# Risk management
 risk:
-  # 止损设置
   stop_loss:
     enabled: true
     max_drawdown_percent: 10
     daily_loss_limit_percent: 5
-    
-  # 仓位限制
+    # Per-position stop-loss/take-profit (percentage from entry)
+    position_stop_loss_percent: 3
+    position_take_profit_percent: 5
+
   position_limit:
-    max_leverage: 3
-    max_position_size: 10000
-    
-  # 监控频率
+    max_leverage: 5
+    max_position_size: 100
+
   monitoring_interval_ms: 1000
 
-# 回测配置
+# Backtest configuration
 backtest:
   data:
     start_date: "2024-01-01"
     end_date: "2024-06-01"
     interval: "1h"
-    
+
   initial_capital: 10000
-  commission_percent: 0.1
-  slippage_percent: 0.05
-  
-  # 回测报告
+  commission_percent: 0.0
+  slippage_percent: 0.02
+
   reporting:
     generate_html: true
     save_trades: true
     plot_equity_curve: true
 
-# 监控面板配置  
+# Dashboard
 dashboard:
   enabled: true
-  host: "0.0.0.0"
+  host: "127.0.0.1"
   port: 2028
   refresh_interval_ms: 1000
-  
-  # 图表配置
+
   charts:
     equity_curve_points: 1000
     order_book_depth: 20
 
-# 日志配置
+# Logging
 logging:
   level: "info"
   file: "logs/lighter-bot.log"

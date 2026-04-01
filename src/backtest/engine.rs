@@ -96,40 +96,84 @@ impl BacktestEngine {
                 for signal in signals {
                     // 模拟执行
                     let execution_price = self.apply_slippage(signal.price, signal.side);
-                    let commission = execution_price * signal.quantity * self.commission_rate;
+                    let commission_per_qty = execution_price * self.commission_rate;
 
-                    // 检查是否有反向持仓需要平仓
-                    if let Some((pos_side, entry_price, pos_qty)) = position {
-                        if pos_side != signal.side {
-                            // 平仓
+                    match position {
+                        Some((pos_side, entry_price, pos_qty)) if pos_side == signal.side => {
+                            let add_qty = signal.quantity;
+                            let add_commission = commission_per_qty * add_qty;
+                            let cost = execution_price * add_qty;
+
+                            if cost + add_commission <= self.capital {
+                                let new_qty = pos_qty + add_qty;
+                                let weighted_entry =
+                                    ((entry_price * pos_qty) + (execution_price * add_qty)) / new_qty;
+                                self.capital -= add_commission;
+                                position = Some((pos_side, weighted_entry, new_qty));
+                                debug!(
+                                    "加仓: {:?} {} @ {:.2}, qty {:.6} -> {:.6}",
+                                    signal.side,
+                                    signal.symbol,
+                                    execution_price,
+                                    pos_qty,
+                                    new_qty
+                                );
+                            }
+                        }
+                        Some((pos_side, entry_price, pos_qty)) => {
+                            let close_qty = pos_qty.min(signal.quantity);
+                            let close_commission = commission_per_qty * close_qty;
                             let pnl = match pos_side {
-                                Side::Buy => (execution_price - entry_price) * pos_qty,
-                                Side::Sell => (entry_price - execution_price) * pos_qty,
+                                Side::Buy => (execution_price - entry_price) * close_qty,
+                                Side::Sell => (entry_price - execution_price) * close_qty,
                             };
 
-                            self.capital += pnl - commission;
+                            self.capital += pnl - close_commission;
                             self.trades.push(BacktestTrade {
                                 timestamp: candle.timestamp,
                                 symbol: signal.symbol.clone(),
                                 side: signal.side,
                                 price: execution_price,
-                                quantity: pos_qty,
+                                quantity: close_qty,
                                 pnl,
-                                commission,
+                                commission: close_commission,
                             });
 
                             debug!("平仓: {} @ {:.2}, PnL: {:.2}", signal.symbol, execution_price, pnl);
-                            position = None;
-                        }
-                    }
 
-                    // 开仓
-                    if position.is_none() {
-                        let cost = execution_price * signal.quantity;
-                        if cost + commission <= self.capital {
-                            self.capital -= commission;
-                            position = Some((signal.side, execution_price, signal.quantity));
-                            debug!("开仓: {:?} {} @ {:.2}", signal.side, signal.symbol, execution_price);
+                            let remaining_pos_qty = pos_qty - close_qty;
+                            let remaining_signal_qty = signal.quantity - close_qty;
+
+                            position = if remaining_pos_qty > f64::EPSILON {
+                                Some((pos_side, entry_price, remaining_pos_qty))
+                            } else {
+                                None
+                            };
+
+                            if remaining_signal_qty > f64::EPSILON {
+                                let open_commission = commission_per_qty * remaining_signal_qty;
+                                let cost = execution_price * remaining_signal_qty;
+                                if cost + open_commission <= self.capital {
+                                    self.capital -= open_commission;
+                                    position = Some((signal.side, execution_price, remaining_signal_qty));
+                                    debug!(
+                                        "反手开仓: {:?} {} @ {:.2}, qty {:.6}",
+                                        signal.side,
+                                        signal.symbol,
+                                        execution_price,
+                                        remaining_signal_qty
+                                    );
+                                }
+                            }
+                        }
+                        None => {
+                            let commission = commission_per_qty * signal.quantity;
+                            let cost = execution_price * signal.quantity;
+                            if cost + commission <= self.capital {
+                                self.capital -= commission;
+                                position = Some((signal.side, execution_price, signal.quantity));
+                                debug!("开仓: {:?} {} @ {:.2}", signal.side, signal.symbol, execution_price);
+                            }
                         }
                     }
                 }
@@ -178,6 +222,7 @@ impl BacktestEngine {
         if let Some(last) = candles.last() {
             let ob = OrderBook {
                 symbol: last.symbol.clone(),
+                market_id: 0,
                 bids: vec![PriceLevel { price: last.close * 0.999, quantity: 1.0 }],
                 asks: vec![PriceLevel { price: last.close * 1.001, quantity: 1.0 }],
                 timestamp: last.timestamp,

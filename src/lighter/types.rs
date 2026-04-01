@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
+use std::collections::HashMap;
 
 #[allow(dead_code)]
 const _: () = (); // types module: all types are API surface
@@ -16,8 +17,30 @@ pub enum Side {
 pub enum OrderType {
     Limit,
     Market,
+    StopLoss,
+    StopLossLimit,
+    TakeProfit,
+    TakeProfitLimit,
+    // Keep old variants as aliases
+    #[serde(alias = "StopLimit")]
     StopLimit,
+    #[serde(alias = "StopMarket")]
     StopMarket,
+}
+
+impl OrderType {
+    /// Convert to Lighter protocol integer
+    #[allow(dead_code)]
+    pub fn to_lighter_int(&self) -> i32 {
+        match self {
+            OrderType::Limit => 0,
+            OrderType::Market => 1,
+            OrderType::StopLoss | OrderType::StopMarket => 2,
+            OrderType::StopLossLimit | OrderType::StopLimit => 3,
+            OrderType::TakeProfit => 4,
+            OrderType::TakeProfitLimit => 5,
+        }
+    }
 }
 
 // ===== 订单状态 =====
@@ -28,6 +51,34 @@ pub enum OrderStatus {
     Filled,
     Cancelled,
     Rejected,
+}
+
+// ===== Market Info =====
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MarketInfo {
+    pub market_id: u32,
+    pub symbol: String,
+    pub size_decimals: u32,
+    pub price_decimals: u32,
+    pub min_base_amount: f64,
+    pub min_quote_amount: f64,
+    pub last_trade_price: f64,
+}
+
+impl MarketInfo {
+    /// Convert a floating-point size to integer base amount (e.g. 1.0 ETH -> 10000)
+    #[allow(dead_code)]
+    pub fn size_to_base_amount(&self, size: f64) -> i64 {
+        let factor = 10_f64.powi(self.size_decimals as i32);
+        (size * factor).round() as i64
+    }
+
+    /// Convert a floating-point price to integer price (e.g. $2070.00 -> 207000)
+    #[allow(dead_code)]
+    pub fn price_to_int(&self, price: f64) -> i32 {
+        let factor = 10_f64.powi(self.price_decimals as i32);
+        (price * factor).round() as i32
+    }
 }
 
 // ===== K线数据 =====
@@ -54,6 +105,7 @@ pub struct PriceLevel {
 #[allow(dead_code)]
 pub struct OrderBook {
     pub symbol: String,
+    pub market_id: u32,
     pub bids: Vec<PriceLevel>,
     pub asks: Vec<PriceLevel>,
     pub timestamp: DateTime<Utc>,
@@ -89,6 +141,7 @@ impl OrderBook {
 pub struct Trade {
     pub id: String,
     pub symbol: String,
+    pub market_id: u32,
     pub price: f64,
     pub quantity: f64,
     pub side: Side,
@@ -155,6 +208,7 @@ pub enum WsMessage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TradeSignal {
     pub symbol: String,
+    pub market_id: u32,
     pub side: Side,
     pub price: f64,
     pub quantity: f64,
@@ -167,13 +221,14 @@ pub struct TradeSignal {
 #[derive(Debug, Clone, Default)]
 #[allow(dead_code)]
 pub struct MarketSnapshot {
-    pub order_books: std::collections::HashMap<String, OrderBook>,
+    pub order_books: HashMap<String, OrderBook>,
     pub recent_trades: Vec<Trade>,
-    pub candles: std::collections::HashMap<String, Vec<Candlestick>>,
+    pub candles: HashMap<String, Vec<Candlestick>>,
 }
 
 // ===== 下单请求 =====
 #[derive(Debug, Clone, Serialize)]
+#[allow(dead_code)]
 pub struct PlaceOrderRequest {
     pub symbol: String,
     pub side: Side,
@@ -187,4 +242,33 @@ pub struct PlaceOrderRequest {
 pub struct PlaceOrderResponse {
     pub order_id: String,
     pub status: String,
+}
+
+// ===== Trading State =====
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct TradingState {
+    pub market_infos: HashMap<u32, MarketInfo>,
+    pub order_books: HashMap<u32, OrderBook>,
+    pub recent_trades: HashMap<u32, Vec<Trade>>,
+    pub candles: HashMap<u32, Vec<Candlestick>>,
+    pub positions: Vec<Position>,
+    pub account_info: Option<AccountInfo>,
+    pub trade_history: Vec<Trade>,
+    pub start_time: DateTime<Utc>,
+}
+
+impl Default for TradingState {
+    fn default() -> Self {
+        Self {
+            market_infos: HashMap::new(),
+            order_books: HashMap::new(),
+            recent_trades: HashMap::new(),
+            candles: HashMap::new(),
+            positions: Vec::new(),
+            account_info: None,
+            trade_history: Vec::new(),
+            start_time: Utc::now(),
+        }
+    }
 }

@@ -1,46 +1,48 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use chrono::Utc;
+use chrono::{Duration, Utc};
+use std::collections::HashMap;
 use std::sync::Mutex;
-use tracing::debug;
+use tracing::{debug, info};
 
 use crate::lighter::types::*;
 use super::Strategy;
 
-/// 网格交易策略
+/// Grid Trading Strategy for Live Trading
 ///
-/// 在指定价格范围内均匀分布买卖网格，当价格触及网格线时进行交易。
-/// 使用锚定价格保持网格稳定，仅在价格偏离过大时重新锚定。
+/// Places limit buy orders below current price and limit sell orders above it.
+/// When a grid level is filled, the opposite direction is unlocked for profit.
+/// Each market maintains its own independent grid state.
+/// Includes an EMA trend filter to avoid accumulating in strong trends.
 pub struct GridStrategy {
     grid_count: usize,
     investment_per_grid: f64,
     price_deviation: f64,
-    /// 使用 Mutex 实现内部可变性，因为 Strategy::evaluate 接受 &self
-    state: Mutex<GridState>,
+    states: Mutex<HashMap<String, MarketGridState>>,
 }
 
-struct GridState {
-    anchor_price: Option<f64>,
+struct MarketGridState {
+    anchor_price: f64,
+    last_mid_price: f64,
+    last_signal_time: Option<chrono::DateTime<Utc>>,
     filled_buy: Vec<bool>,
     filled_sell: Vec<bool>,
+    /// Rolling price history for trend detection (up to 50 prices)
+    price_history: Vec<f64>,
+    /// EMA value
+    ema: f64,
 }
 
 impl GridStrategy {
     pub fn new(grid_count: usize, investment_per_grid: f64, price_deviation: f64) -> Self {
-        let half = grid_count / 2;
         Self {
             grid_count,
             investment_per_grid,
             price_deviation,
-            state: Mutex::new(GridState {
-                anchor_price: None,
-                filled_buy: vec![false; half],
-                filled_sell: vec![false; half],
-            }),
+            states: Mutex::new(HashMap::new()),
         }
     }
 
-    /// 计算网格线价格
     fn grid_prices(&self, anchor: f64) -> (Vec<f64>, Vec<f64>) {
         let half = self.grid_count / 2;
         let step = anchor * self.price_deviation / half.max(1) as f64;
@@ -61,91 +63,142 @@ impl Strategy for GridStrategy {
 
         for (symbol, ob) in &snapshot.order_books {
             let mid_price = match ob.mid_price() {
-                Some(p) => p,
-                None => continue,
-            };
-
-            // 需要至少2根K线来检测价格穿越
-            let candles = match snapshot.candles.get(symbol) {
-                Some(c) if c.len() >= 2 => c,
+                Some(p) if p > 0.0 => p,
                 _ => continue,
             };
 
-            let prev = &candles[candles.len() - 2];
-            let cur = &candles[candles.len() - 1];
+            let half = self.grid_count / 2;
+            let mut states = self.states.lock().unwrap();
 
-            let mut state = self.state.lock().unwrap();
-
-            // 初始化或重置锚定价格（价格偏离过大时重置网格）
-            let need_reset = match state.anchor_price {
-                None => true,
-                Some(anchor) => {
-                    let drift = (mid_price - anchor).abs() / anchor;
-                    drift > self.price_deviation * 0.8
+            // Get or initialize per-market state
+            let state = states.entry(symbol.clone()).or_insert_with(|| {
+                info!("Grid anchor set: {:.2} for {}", mid_price, symbol);
+                MarketGridState {
+                    anchor_price: mid_price,
+                    last_mid_price: mid_price,
+                    last_signal_time: None,
+                    filled_buy: vec![false; half],
+                    filled_sell: vec![false; half],
+                    price_history: vec![mid_price],
+                    ema: mid_price,
                 }
-            };
-            if need_reset {
-                state.anchor_price = Some(mid_price);
-                let half = self.grid_count / 2;
+            });
+
+            // Outlier filter: reject ticks >3% from last known price
+            let tick_change = (mid_price - state.last_mid_price).abs() / state.last_mid_price;
+            if tick_change > 0.03 {
+                debug!("{} outlier tick rejected: {:.2} -> {:.2} ({:.2}%)",
+                    symbol, state.last_mid_price, mid_price, tick_change * 100.0);
+                continue;
+            }
+            state.last_mid_price = mid_price;
+
+            // Update EMA (20-period exponential moving average)
+            state.price_history.push(mid_price);
+            if state.price_history.len() > 50 {
+                state.price_history.remove(0);
+            }
+            let alpha = 2.0 / 21.0; // EMA-20
+            state.ema = alpha * mid_price + (1.0 - alpha) * state.ema;
+
+            // Trend strength: positive = price above EMA (bullish), negative = below (bearish)
+            let trend_pct = (mid_price - state.ema) / state.ema;
+            // Strong trend threshold: 0.3% deviation from EMA
+            let strong_trend = trend_pct.abs() > 0.003;
+            let bearish = trend_pct < -0.003;
+            let bullish = trend_pct > 0.003;
+
+            // Use market timestamps so backtests are throttled by simulated time, not wall clock.
+            if let Some(last_signal_time) = state.last_signal_time {
+                if ob.timestamp.signed_duration_since(last_signal_time) < Duration::seconds(15) {
+                    continue;
+                }
+            }
+
+            let anchor = state.anchor_price;
+
+            // Only reset anchor if price drifted beyond 2x the full grid range
+            let drift = (mid_price - anchor).abs() / anchor;
+            if drift > self.price_deviation * 2.0 {
+                state.anchor_price = mid_price;
                 state.filled_buy = vec![false; half];
                 state.filled_sell = vec![false; half];
-                debug!("网格锚定重置: {:.2}", mid_price);
+                state.ema = mid_price; // reset EMA to avoid stale trend signal
+                info!("Grid anchor reset: {:.2} -> {:.2} for {} (drift {:.2}%)",
+                    anchor, mid_price, symbol, drift * 100.0);
                 continue;
             }
 
-            let anchor = state.anchor_price.unwrap();
             let (buy_grids, sell_grids) = self.grid_prices(anchor);
 
-            // 检查买入网格：当前K线低点穿过网格线，且前一根收盘在网格线上方
+            // Check buy grids: price dropped to grid level
+            // In strong bearish trend, only fill first buy level (reduce downside exposure)
+            let mut signal_found = false;
             for (i, &grid_price) in buy_grids.iter().enumerate() {
                 if i >= state.filled_buy.len() || state.filled_buy[i] {
                     continue;
                 }
-                if cur.low <= grid_price && prev.close > grid_price {
+                // In strong downtrend, skip deeper buy levels to limit drawdown
+                if bearish && i >= 2 {
+                    continue;
+                }
+                if mid_price <= grid_price {
                     let quantity = self.investment_per_grid / grid_price;
                     all_signals.push(TradeSignal {
                         symbol: symbol.clone(),
+                        market_id: ob.market_id,
                         side: Side::Buy,
                         price: grid_price,
                         quantity,
                         order_type: OrderType::Limit,
-                        reason: format!("网格买入L{}: {:.2}", i + 1, grid_price),
-                        timestamp: Utc::now(),
+                        reason: format!("Grid Buy L{}: {:.2}", i + 1, grid_price),
+                        timestamp: ob.timestamp,
                     });
                     state.filled_buy[i] = true;
-                    // 解锁对面的卖出网格，实现网格来回交易获利
                     if i < state.filled_sell.len() {
                         state.filled_sell[i] = false;
                     }
-                    break; // 每个tick最多触发一个信号
+                    state.last_signal_time = Some(ob.timestamp);
+                    signal_found = true;
+                    break;
                 }
             }
 
-            // 如果没有买入信号，检查卖出网格
-            if all_signals.is_empty() {
+            // Check sell grids if no buy signal for this market
+            // In strong bullish trend, skip deeper sell levels to let profits run
+            if !signal_found {
                 for (i, &grid_price) in sell_grids.iter().enumerate() {
                     if i >= state.filled_sell.len() || state.filled_sell[i] {
                         continue;
                     }
-                    if cur.high >= grid_price && prev.close < grid_price {
+                    if bullish && i >= 2 {
+                        continue;
+                    }
+                    if mid_price >= grid_price {
                         let quantity = self.investment_per_grid / grid_price;
                         all_signals.push(TradeSignal {
                             symbol: symbol.clone(),
+                            market_id: ob.market_id,
                             side: Side::Sell,
                             price: grid_price,
                             quantity,
                             order_type: OrderType::Limit,
-                            reason: format!("网格卖出L{}: {:.2}", i + 1, grid_price),
-                            timestamp: Utc::now(),
+                            reason: format!("Grid Sell L{}: {:.2}", i + 1, grid_price),
+                            timestamp: ob.timestamp,
                         });
                         state.filled_sell[i] = true;
                         if i < state.filled_buy.len() {
                             state.filled_buy[i] = false;
                         }
+                        state.last_signal_time = Some(ob.timestamp);
                         break;
                     }
                 }
             }
+
+            debug!("{} mid={:.2} anchor={:.2} ema={:.2} trend={:+.3}% {}",
+                symbol, mid_price, anchor, state.ema, trend_pct * 100.0,
+                if strong_trend { if bearish { "↓BEAR" } else { "↑BULL" } } else { "→RANGE" });
         }
 
         if all_signals.is_empty() {
@@ -156,16 +209,40 @@ impl Strategy for GridStrategy {
     }
 
     fn reset(&mut self) {
-        let mut state = self.state.lock().unwrap();
-        state.anchor_price = None;
-        state.filled_buy.fill(false);
-        state.filled_sell.fill(false);
+        let mut states = self.states.lock().unwrap();
+        states.clear();
+    }
+
+    fn clear_filled_state(&self) {
+        let mut states = self.states.lock().unwrap();
+        for (symbol, state) in states.iter_mut() {
+            let half = state.filled_buy.len();
+            state.filled_buy = vec![false; half];
+            state.filled_sell = vec![false; half];
+            info!("Grid filled state cleared for {}", symbol);
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::{TimeZone, Utc};
+
+    fn snapshot(symbol: &str, ts: i64, price: f64) -> MarketSnapshot {
+        let mut snap = MarketSnapshot::default();
+        snap.order_books.insert(
+            symbol.to_string(),
+            OrderBook {
+                symbol: symbol.to_string(),
+                market_id: 1,
+                bids: vec![PriceLevel { price: price - 0.1, quantity: 1.0 }],
+                asks: vec![PriceLevel { price: price + 0.1, quantity: 1.0 }],
+                timestamp: Utc.timestamp_opt(ts, 0).unwrap(),
+            },
+        );
+        snap
+    }
 
     #[test]
     fn test_grid_prices() {
@@ -183,9 +260,20 @@ mod tests {
         let (buy_grids, sell_grids) = strategy.grid_prices(10000.0);
         assert_eq!(buy_grids.len(), 10);
         assert_eq!(sell_grids.len(), 10);
-        // First buy grid is closest to anchor
         assert!(buy_grids[0] > buy_grids[1]);
-        // First sell grid is closest to anchor
         assert!(sell_grids[0] < sell_grids[1]);
+    }
+
+    #[tokio::test]
+    async fn test_grid_cooldown_uses_market_time() {
+        let strategy = GridStrategy::new(4, 100.0, 0.02);
+
+        assert!(strategy.evaluate(&snapshot("BTC", 1_700_000_000, 100.0)).await.unwrap().is_none());
+
+        let first = strategy.evaluate(&snapshot("BTC", 1_700_000_900, 98.5)).await.unwrap();
+        assert_eq!(first.unwrap().len(), 1);
+
+        let second = strategy.evaluate(&snapshot("BTC", 1_700_001_800, 97.5)).await.unwrap();
+        assert_eq!(second.unwrap().len(), 1);
     }
 }

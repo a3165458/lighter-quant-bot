@@ -20,6 +20,10 @@ pub trait Strategy: Send + Sync {
     /// 重置策略状态
     #[allow(dead_code)]
     fn reset(&mut self);
+
+    /// Clear filled/pending state (e.g. after stale orders cancelled).
+    /// Uses interior mutability so it can be called via &self / Arc<dyn Strategy>.
+    fn clear_filled_state(&self) {}
 }
 
 /// 根据配置创建策略
@@ -63,13 +67,37 @@ pub fn create_strategy(settings: &Config) -> Result<Box<dyn Strategy>> {
 
 /// 根据策略名称创建策略（用于回测）
 pub fn create_strategy_from_name(name: &str) -> Result<Box<dyn Strategy>> {
+    create_strategy_with_params(name, None)
+}
+
+/// 根据策略名和可选参数创建策略
+/// params 格式: "grid_count=10,investment=8.0,deviation=0.008"
+pub fn create_strategy_with_params(name: &str, params: Option<&str>) -> Result<Box<dyn Strategy>> {
+    let kv = parse_params(params.unwrap_or(""));
+
     match name {
         "grid_trading" | "grid" => {
-            Ok(Box::new(grid_strategy::GridStrategy::new(20, 50.0, 0.015)))
+            let grid_count = kv.get("grid_count").and_then(|v| v.parse().ok()).unwrap_or(10);
+            let investment = kv.get("investment").and_then(|v| v.parse().ok()).unwrap_or(8.0);
+            let deviation = kv.get("deviation").and_then(|v| v.parse().ok()).unwrap_or(0.008);
+            Ok(Box::new(grid_strategy::GridStrategy::new(grid_count, investment, deviation)))
         }
         "trend_following" | "trend" => {
-            Ok(Box::new(trend_strategy::TrendStrategy::new(7, 21, 0.03, 0.06)))
+            let fast_ma = kv.get("fast_ma").and_then(|v| v.parse().ok()).unwrap_or(7);
+            let slow_ma = kv.get("slow_ma").and_then(|v| v.parse().ok()).unwrap_or(21);
+            let stop_loss = kv.get("stop_loss").and_then(|v| v.parse().ok()).unwrap_or(0.03);
+            let take_profit = kv.get("take_profit").and_then(|v| v.parse().ok()).unwrap_or(0.06);
+            Ok(Box::new(trend_strategy::TrendStrategy::new(fast_ma, slow_ma, stop_loss, take_profit)))
         }
         _ => anyhow::bail!("未知策略: {}", name),
     }
+}
+
+fn parse_params(s: &str) -> std::collections::HashMap<String, String> {
+    s.split(',')
+        .filter_map(|pair| {
+            let mut parts = pair.splitn(2, '=');
+            Some((parts.next()?.trim().to_string(), parts.next()?.trim().to_string()))
+        })
+        .collect()
 }

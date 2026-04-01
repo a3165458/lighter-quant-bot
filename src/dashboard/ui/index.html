@@ -1,0 +1,749 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lighter Quant Bot | Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="https://unpkg.com/lucide@latest"></script>
+<style>
+/* ── Light Theme ── */
+:root, [data-theme="light"] {
+  --bg-body: #F4F7FE;
+  --bg-card: #FFFFFF;
+  --bg-card-hover: #FAFBFF;
+  --bg-input: #F4F7FE;
+  --bg-sidebar: #FFFFFF;
+  --bg-overlay: rgba(0,0,0,0.3);
+  --primary: #4318FF;
+  --primary-hover: #3311DB;
+  --primary-dim: rgba(67,24,255,0.08);
+  --primary-gradient: linear-gradient(135deg, #868CFF 0%, #4318FF 100%);
+  --text-main: #2B3674;
+  --text-sub: #A3AED0;
+  --text-muted: #C4CAD8;
+  --success: #05CD99;
+  --success-bg: #E6FFF5;
+  --danger: #EE5D50;
+  --danger-bg: #FFEFEF;
+  --warning: #FFB547;
+  --warning-bg: #FFF8EB;
+  --border: #E9EDF7;
+  --shadow: 0 18px 40px rgba(112,144,176,0.12);
+  --shadow-sm: 0 4px 12px rgba(112,144,176,0.08);
+  --chart-grid: #E9EDF7;
+  --chart-text: #A3AED0;
+  --scrollbar-track: #F0F2F8;
+  --scrollbar-thumb: #D0D5E0;
+  --radius-lg: 20px;
+  --radius-md: 14px;
+  --radius-sm: 10px;
+  --sidebar-w: 290px;
+  --topbar-h: 90px;
+}
+
+/* ── Dark Theme ── */
+[data-theme="dark"] {
+  --bg-body: #0B1437;
+  --bg-card: #111C44;
+  --bg-card-hover: #162050;
+  --bg-input: #0B1437;
+  --bg-sidebar: #111C44;
+  --bg-overlay: rgba(0,0,0,0.6);
+  --primary: #7551FF;
+  --primary-hover: #6340E8;
+  --primary-dim: rgba(117,81,255,0.15);
+  --primary-gradient: linear-gradient(135deg, #868CFF 0%, #7551FF 100%);
+  --text-main: #FFFFFF;
+  --text-sub: #A3AED0;
+  --text-muted: #56607B;
+  --success: #01B574;
+  --success-bg: rgba(1,181,116,0.12);
+  --danger: #E31A1A;
+  --danger-bg: rgba(227,26,26,0.12);
+  --warning: #FFB547;
+  --warning-bg: rgba(255,181,71,0.12);
+  --border: #1B254B;
+  --shadow: 0 18px 40px rgba(0,0,0,0.3);
+  --shadow-sm: 0 4px 12px rgba(0,0,0,0.2);
+  --chart-grid: #1B254B;
+  --chart-text: #56607B;
+  --scrollbar-track: #0B1437;
+  --scrollbar-thumb: #1B254B;
+}
+
+/* ── Reset ── */
+*,*::before,*::after { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:'DM Sans',sans-serif; background:var(--bg-body); color:var(--text-main); display:flex; min-height:100vh; transition: background 0.3s, color 0.3s; }
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar { width:6px; }
+::-webkit-scrollbar-track { background:var(--scrollbar-track); }
+::-webkit-scrollbar-thumb { background:var(--scrollbar-thumb); border-radius:3px; }
+
+/* ── Sidebar ── */
+aside {
+  width:var(--sidebar-w); background:var(--bg-sidebar); padding:32px 0;
+  display:flex; flex-direction:column; position:fixed; height:100vh;
+  border-right:1px solid var(--border); z-index:50;
+  transition: background 0.3s, border-color 0.3s;
+}
+.logo { padding:0 32px; margin-bottom:40px; font-size:22px; font-weight:700; display:flex; align-items:center; gap:12px; }
+.logo-icon { width:34px; height:34px; border-radius:10px; display:flex; align-items:center; justify-content:center; color:#fff; background:var(--primary-gradient); }
+.nav-links { list-style:none; flex:1; }
+.nav-item {
+  padding:12px 28px 12px 36px; display:flex; align-items:center; gap:14px;
+  color:var(--text-sub); text-decoration:none; font-weight:500; font-size:15px;
+  position:relative; transition:all 0.2s; cursor:pointer; border:none; background:none; width:100%;
+}
+.nav-item:hover { color:var(--text-main); }
+.nav-item.active { color:var(--text-main); }
+.nav-item.active::after { content:''; position:absolute; right:0; width:4px; height:32px; background:var(--primary); border-radius:4px 0 0 4px; }
+.nav-item.active svg { color:var(--primary); }
+.nav-item svg { width:20px; height:20px; flex-shrink:0; }
+
+.sb-ailab {
+  margin:0 24px; padding:16px; background:var(--primary-gradient); color:#fff;
+  border-radius:16px; text-decoration:none; font-weight:700; font-size:14px;
+  display:flex; align-items:center; gap:10px;
+  box-shadow:0 10px 20px rgba(67,24,255,0.2); transition:transform 0.15s;
+}
+.sb-ailab:hover { transform:translateY(-2px); }
+.sb-ailab svg { width:18px; height:18px; flex-shrink:0; }
+
+.sb-footer { padding:16px 32px; margin-top:12px; border-top:1px solid var(--border); }
+.sb-status { display:flex; align-items:center; gap:8px; font-size:12px; color:var(--text-sub); }
+.sb-dot { width:8px; height:8px; border-radius:50%; background:var(--danger); flex-shrink:0; }
+.sb-dot.live { background:var(--success); animation:blink 2s ease-in-out infinite; }
+@keyframes blink { 0%,100%{opacity:1}50%{opacity:0.3} }
+
+/* ── Main ── */
+main {
+  margin-left:var(--sidebar-w); flex:1; padding:0 32px 32px;
+  display:flex; flex-direction:column; min-height:100vh;
+}
+
+/* ── Top bar ── */
+.topbar {
+  display:flex; justify-content:space-between; align-items:center;
+  padding:24px 0; position:sticky; top:0; z-index:30;
+  background:var(--bg-body); transition:background 0.3s;
+}
+.breadcrumb { font-size:14px; color:var(--text-sub); font-weight:500; }
+.breadcrumb span { display:block; font-size:30px; font-weight:700; color:var(--text-main); margin-top:4px; }
+.topnav {
+  display:flex; align-items:center; gap:8px;
+  background:var(--bg-card); padding:8px 12px; border-radius:30px;
+  box-shadow:var(--shadow-sm); transition:background 0.3s;
+}
+.search-wrap {
+  display:flex; align-items:center; gap:8px;
+  background:var(--bg-input); border-radius:20px; padding:8px 14px;
+  transition:background 0.3s;
+}
+.search-wrap input {
+  border:none; background:transparent; outline:none;
+  font-size:13px; color:var(--text-main); font-family:inherit; width:140px;
+}
+.search-wrap input::placeholder { color:var(--text-muted); }
+.topnav-btn {
+  width:36px; height:36px; border-radius:50%; border:none;
+  background:transparent; color:var(--text-sub); cursor:pointer;
+  display:flex; align-items:center; justify-content:center;
+  transition:all 0.15s; position:relative;
+}
+.topnav-btn:hover { background:var(--bg-input); color:var(--text-main); }
+.topnav-btn svg { width:20px; height:20px; }
+.notif-dot {
+  position:absolute; top:6px; right:6px; width:7px; height:7px;
+  border-radius:50%; background:var(--danger);
+}
+.topnav-avatar {
+  width:36px; height:36px; border-radius:50%;
+  background:var(--primary-dim); border:2px solid var(--primary);
+  display:flex; align-items:center; justify-content:center;
+  color:var(--primary); font-weight:700; font-size:13px; cursor:pointer;
+}
+
+/* ── Notification Panel ── */
+.notif-panel {
+  display:none; position:absolute; top:52px; right:0; width:340px;
+  background:var(--bg-card); border:1px solid var(--border); border-radius:var(--radius-md);
+  box-shadow:var(--shadow); z-index:100; max-height:380px; overflow-y:auto;
+  transition:background 0.3s, border-color 0.3s;
+}
+.notif-panel.show { display:block; }
+.notif-header { padding:14px 18px; border-bottom:1px solid var(--border); font-weight:700; font-size:14px; display:flex; justify-content:space-between; }
+.notif-clear { font-size:12px; color:var(--primary); cursor:pointer; font-weight:600; border:none; background:none; }
+.notif-item {
+  padding:12px 18px; border-bottom:1px solid var(--border); font-size:13px;
+  display:flex; gap:10px; align-items:flex-start; transition:background 0.15s;
+}
+.notif-item:hover { background:var(--bg-input); }
+.notif-icon { width:32px; height:32px; border-radius:50%; display:flex; align-items:center; justify-content:center; flex-shrink:0; font-size:14px; }
+.notif-icon.trade { background:var(--success-bg); color:var(--success); }
+.notif-icon.warn { background:var(--warning-bg); color:var(--warning); }
+.notif-icon.err { background:var(--danger-bg); color:var(--danger); }
+.notif-text { flex:1; }
+.notif-text .notif-msg { color:var(--text-main); font-weight:500; }
+.notif-text .notif-time { color:var(--text-sub); font-size:11px; margin-top:2px; }
+.notif-empty { padding:32px; text-align:center; color:var(--text-sub); font-size:13px; }
+
+/* ── Pages ── */
+.page { display:none; }
+.page.active { display:block; }
+
+/* ── Cards ── */
+.card {
+  background:var(--bg-card); border-radius:var(--radius-lg); padding:24px;
+  box-shadow:var(--shadow-sm); transition:background 0.3s, box-shadow 0.3s;
+}
+.card-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:20px; }
+.card-title { font-size:18px; font-weight:700; }
+.card-subtitle { font-size:13px; color:var(--text-sub); margin-top:2px; }
+
+/* ── Stats Grid ── */
+.stats-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:20px; margin-bottom:24px; }
+.stat-card { display:flex; align-items:center; gap:15px; }
+.stat-icon {
+  width:56px; height:56px; background:var(--bg-input); border-radius:50%;
+  display:flex; align-items:center; justify-content:center; color:var(--primary);
+  transition:background 0.3s;
+}
+.stat-info .label { font-size:14px; color:var(--text-sub); font-weight:500; }
+.stat-info .value { font-size:24px; font-weight:700; font-variant-numeric:tabular-nums; transition:color 0.3s; }
+
+/* ── Charts Grid ── */
+.charts-grid { display:grid; grid-template-columns:2fr 1fr; gap:20px; margin-bottom:24px; }
+
+/* ── Bottom Grid (positions + orderbook) ── */
+.bottom-grid { display:grid; grid-template-columns:1fr 380px; gap:20px; margin-bottom:24px; }
+
+/* ── Tables ── */
+table { width:100%; border-collapse:collapse; }
+th {
+  text-align:left; font-size:11px; color:var(--text-sub); text-transform:uppercase;
+  letter-spacing:0.5px; padding:12px 16px; border-bottom:1px solid var(--border);
+  font-weight:600;
+}
+td {
+  padding:14px 16px; font-size:14px; font-weight:500; color:var(--text-main);
+  border-bottom:1px solid var(--border); font-variant-numeric:tabular-nums;
+  transition:background 0.15s;
+}
+tr:hover td { background:var(--bg-card-hover); }
+.td-r { text-align:right; }
+.empty-cell { text-align:center; padding:40px 16px !important; color:var(--text-sub); font-size:13px; }
+
+/* ── Badges ── */
+.badge { padding:5px 12px; border-radius:10px; font-size:12px; font-weight:700; display:inline-flex; align-items:center; gap:5px; }
+.badge-up { background:var(--success-bg); color:var(--success); }
+.badge-down { background:var(--danger-bg); color:var(--danger); }
+.badge-warn { background:var(--warning-bg); color:var(--warning); }
+.badge-info { background:var(--primary-dim); color:var(--primary); }
+
+/* ── PnL Colors ── */
+.c-up { color:var(--success) !important; }
+.c-down { color:var(--danger) !important; }
+.pnl-arrow { font-size:0.7em; margin-right:2px; vertical-align:middle; }
+
+/* ── Orderbook ── */
+.ob-section { padding:0; }
+.ob-tabs { display:flex; gap:4px; }
+.ob-tab {
+  padding:5px 14px; border-radius:8px; border:none; cursor:pointer;
+  font-size:12px; font-weight:600; font-family:inherit;
+  background:transparent; color:var(--text-sub); transition:all 0.15s;
+}
+.ob-tab:hover { color:var(--text-main); }
+.ob-tab.active { background:var(--primary-dim); color:var(--primary); }
+.ob-head { display:flex; justify-content:space-between; padding:8px 16px; font-size:10px; color:var(--text-sub); text-transform:uppercase; font-weight:600; letter-spacing:0.4px; }
+.ob-row {
+  display:flex; justify-content:space-between; padding:3px 16px;
+  font-size:12px; font-variant-numeric:tabular-nums; position:relative;
+  line-height:1.8;
+}
+.ob-row::before { content:''; position:absolute; top:0; bottom:0; right:0; width:var(--depth,0%); transition:width 0.3s; }
+.ob-row.bid::before { background:rgba(5,205,153,0.08); }
+.ob-row.ask::before { background:rgba(238,93,80,0.08); }
+.ob-price { position:relative; z-index:1; font-weight:600; }
+.ob-size { position:relative; z-index:1; color:var(--text-sub); }
+.ob-mid {
+  padding:8px 16px; text-align:center; font-size:14px; font-weight:700;
+  background:var(--bg-input); font-variant-numeric:tabular-nums;
+}
+
+/* ── Risk Monitor ── */
+.risk-section { padding:16px; border-top:1px solid var(--border); }
+.risk-title { font-size:11px; font-weight:700; color:var(--primary); text-transform:uppercase; letter-spacing:0.6px; margin-bottom:12px; }
+.risk-item { margin-bottom:10px; }
+.risk-item:last-child { margin-bottom:0; }
+.risk-labels { display:flex; justify-content:space-between; font-size:12px; margin-bottom:4px; }
+.risk-k { color:var(--text-sub); }
+.risk-v { font-weight:700; }
+.risk-bar { height:4px; background:var(--border); border-radius:2px; overflow:hidden; }
+.risk-fill { height:100%; border-radius:2px; transition:width 0.5s,background 0.3s; }
+.risk-fill.ok { background:var(--success); }
+.risk-fill.warn { background:var(--warning); }
+.risk-fill.danger { background:var(--danger); }
+
+/* ── Stat rows ── */
+.info-row { display:flex; justify-content:space-between; padding:10px 16px; font-size:13px; border-bottom:1px solid var(--border); }
+.info-row:last-child { border-bottom:none; }
+.info-k { color:var(--text-sub); font-weight:500; }
+.info-v { font-weight:700; font-variant-numeric:tabular-nums; }
+
+/* ── PnL bars ── */
+.pnl-section { padding:16px; border-top:1px solid var(--border); }
+.pnl-bar-row { display:flex; align-items:center; gap:8px; margin-bottom:6px; }
+.pnl-bar-date { font-size:11px; color:var(--text-sub); width:56px; flex-shrink:0; font-weight:600; }
+.pnl-bar-track { flex:1; height:18px; background:var(--bg-input); border-radius:4px; position:relative; overflow:hidden; }
+.pnl-bar-fill { position:absolute; top:0; bottom:0; border-radius:4px; min-width:2px; transition:width 0.4s; }
+.pnl-bar-fill.pos { background:var(--success-bg); left:50%; }
+.pnl-bar-fill.neg { background:var(--danger-bg); right:50%; }
+.pnl-bar-center { position:absolute; left:50%; top:0; bottom:0; width:1px; background:var(--border); }
+.pnl-bar-val { font-size:11px; width:56px; text-align:right; font-weight:700; font-variant-numeric:tabular-nums; flex-shrink:0; }
+
+/* ── Log ── */
+.log-area { padding:12px; font-family:'SF Mono','Fira Code',monospace; font-size:11px; max-height:240px; overflow-y:auto; }
+.log-line { padding:2px 0; line-height:1.7; white-space:pre-wrap; word-break:break-all; }
+.log-ts { color:var(--text-muted); }
+.log-i { color:var(--primary); }
+.log-w { color:var(--warning); }
+.log-e { color:var(--danger); }
+.log-t { color:var(--success); }
+
+/* ── Tabs ── */
+.tab-bar { display:flex; gap:4px; margin-bottom:16px; }
+.tab-btn {
+  padding:7px 16px; border-radius:10px; border:none; cursor:pointer;
+  font-size:13px; font-weight:600; font-family:inherit;
+  background:transparent; color:var(--text-sub); transition:all 0.15s;
+}
+.tab-btn:hover { color:var(--text-main); background:var(--bg-input); }
+.tab-btn.active { background:var(--primary-dim); color:var(--primary); }
+.tab-panel { display:none; }
+.tab-panel.active { display:block; }
+
+/* ── Buttons ── */
+.btn { padding:10px 20px; border-radius:12px; border:none; font-weight:700; font-family:inherit; cursor:pointer; font-size:13px; transition:all 0.15s; }
+.btn-primary { background:var(--primary); color:#fff; }
+.btn-primary:hover { background:var(--primary-hover); transform:translateY(-1px); }
+.btn-outline { background:transparent; border:1px solid var(--border); color:var(--text-main); }
+.btn-outline:hover { border-color:var(--text-sub); background:var(--bg-input); }
+
+/* ── Strategy cards ── */
+.strat-grid { display:grid; grid-template-columns:1fr 1fr; gap:20px; }
+.cfg-group { margin-bottom:16px; }
+.cfg-label { display:block; font-size:11px; color:var(--text-sub); margin-bottom:6px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; }
+.cfg-input {
+  width:100%; padding:12px 14px; border-radius:12px; border:1px solid var(--border);
+  background:var(--bg-input); color:var(--text-main); font-weight:600;
+  font-size:14px; font-family:inherit; transition:border 0.2s,background 0.3s;
+}
+.cfg-input:focus { outline:none; border-color:var(--primary); }
+.cfg-msg { text-align:center; margin-top:10px; font-size:14px; font-weight:600; min-height:20px; }
+
+/* ── Market Toggles ── */
+.market-toggle {
+  display:flex; align-items:center; gap:12px; cursor:pointer;
+  padding:10px 14px; border-radius:12px; background:var(--bg-input);
+  transition:background 0.2s;
+}
+.market-toggle:hover { background:var(--bg-card-hover); }
+.market-toggle input { display:none; }
+.mt-slider {
+  width:44px; height:24px; background:var(--border); border-radius:12px;
+  position:relative; transition:background 0.3s; flex-shrink:0;
+}
+.mt-slider::after {
+  content:''; position:absolute; top:3px; left:3px; width:18px; height:18px;
+  background:#fff; border-radius:50%; transition:transform 0.2s; box-shadow:0 1px 3px rgba(0,0,0,0.2);
+}
+.market-toggle input:checked + .mt-slider { background:var(--success); }
+.market-toggle input:checked + .mt-slider::after { transform:translateX(20px); }
+.mt-label { font-weight:600; font-size:14px; }
+.mt-id { color:var(--text-sub); font-size:12px; font-weight:500; }
+
+/* ── Action Buttons ── */
+.btn-pause {
+  background:var(--warning); color:#fff; border:none; padding:12px 20px;
+  border-radius:12px; font-weight:700; font-family:inherit; cursor:pointer;
+  font-size:13px; transition:all 0.15s;
+}
+.btn-pause:hover { filter:brightness(0.9); transform:translateY(-1px); }
+.btn-pause.paused { background:var(--success); }
+.btn-danger-outline { border-color:var(--danger) !important; color:var(--danger) !important; }
+.btn-danger-outline:hover { background:var(--danger-bg) !important; }
+
+/* ── Settings ── */
+.settings-grid { display:grid; grid-template-columns:1fr 1fr; gap:20px; }
+
+/* ── History filter ── */
+.filter-bar { display:flex; gap:12px; align-items:center; margin-bottom:20px; }
+.filter-search-wrap { flex:1; position:relative; }
+.filter-search-wrap svg { position:absolute; left:14px; top:50%; transform:translateY(-50%); color:var(--text-muted); width:16px; height:16px; }
+.filter-search {
+  width:100%; padding:10px 14px 10px 40px; border-radius:12px;
+  border:1px solid var(--border); background:var(--bg-input);
+  color:var(--text-main); font-size:13px; font-family:inherit; transition:border 0.2s,background 0.3s;
+}
+.filter-search:focus { outline:none; border-color:var(--primary); }
+.filter-search::placeholder { color:var(--text-muted); }
+.filter-group { display:flex; gap:6px; }
+.fpill {
+  padding:7px 14px; border-radius:10px; border:1px solid var(--border);
+  background:transparent; color:var(--text-sub); font-size:12px;
+  font-weight:600; font-family:inherit; cursor:pointer; transition:all 0.15s;
+}
+.fpill:hover { border-color:var(--text-sub); color:var(--text-main); }
+.fpill.active { background:var(--primary); border-color:var(--primary); color:#fff; }
+
+/* ── WS offline bar ── */
+#ws-offline { position:fixed; top:0; left:0; right:0; background:var(--danger); color:#fff; text-align:center; padding:6px; font-size:12px; font-weight:600; z-index:1000; display:none; }
+
+/* ── Responsive ── */
+@media (max-width:1280px) {
+  .stats-grid { grid-template-columns:repeat(2,1fr); }
+  .charts-grid { grid-template-columns:1fr; }
+  .bottom-grid { grid-template-columns:1fr; }
+  .strat-grid { grid-template-columns:1fr; }
+  .settings-grid { grid-template-columns:1fr; }
+}
+@media (max-width:768px) {
+  aside { display:none; }
+  main { margin-left:0; }
+  .stats-grid { grid-template-columns:1fr; }
+}
+</style>
+</head>
+<body>
+
+<div id="ws-offline">⚡ Connection lost. Reconnecting...</div>
+
+<!-- ═══ SIDEBAR ═══ -->
+<aside>
+  <div class="logo">
+    <div class="logo-icon"><i data-lucide="zap"></i></div>
+    Lighter Bot
+  </div>
+  <ul class="nav-links">
+    <li><a href="#" class="nav-item active" data-page="dashboard"><i data-lucide="layout-dashboard"></i> <span data-i18n="dashboard">Dashboard</span></a></li>
+    <li><a href="#" class="nav-item" data-page="strategies"><i data-lucide="trending-up"></i> <span data-i18n="strategies">Strategies</span></a></li>
+    <li><a href="#" class="nav-item" data-page="portfolio"><i data-lucide="wallet"></i> <span data-i18n="portfolio">Portfolio</span></a></li>
+    <li><a href="#" class="nav-item" data-page="history"><i data-lucide="clock"></i> <span data-i18n="history">History</span></a></li>
+    <li><a href="#" class="nav-item" data-page="settings"><i data-lucide="settings"></i> <span data-i18n="settings">Settings</span></a></li>
+  </ul>
+  <div style="padding:0 24px; margin-bottom:16px;">
+    <a href="/ai" class="sb-ailab"><i data-lucide="sparkles"></i> AI Strategy Lab</a>
+  </div>
+  <div class="sb-footer">
+    <div class="sb-status">
+      <span class="sb-dot" id="status-dot"></span>
+      <span id="status-label">Connecting...</span>
+      <span style="margin-left:auto; font-family:monospace;" id="clock">--:--</span>
+    </div>
+  </div>
+</aside>
+
+<!-- ═══ MAIN ═══ -->
+<main>
+  <div class="topbar">
+    <div class="breadcrumb">Pages / <span id="current-page-title">Dashboard</span></div>
+    <div class="topnav">
+      <div class="search-wrap">
+        <i data-lucide="search" style="width:16px;height:16px;"></i>
+        <input type="text" placeholder="Search..." id="global-search">
+      </div>
+      <button class="topnav-btn" id="btn-notif" title="Notifications">
+        <i data-lucide="bell"></i>
+        <span class="notif-dot" id="notif-dot" style="display:none"></span>
+      </button>
+      <button class="topnav-btn" id="btn-theme" title="Toggle dark/light mode">
+        <i data-lucide="moon" id="theme-icon"></i>
+      </button>
+      <button class="topnav-btn" id="btn-lang" title="切换语言 / Switch language">
+        <span style="font-size:13px;font-weight:700;" id="lang-label">EN</span>
+      </button>
+      <!-- Notification Panel -->
+      <div class="notif-panel" id="notif-panel">
+        <div class="notif-header"><span>Notifications</span><button class="notif-clear" id="notif-clear">Clear all</button></div>
+        <div id="notif-list"><div class="notif-empty">No notifications yet</div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ DASHBOARD PAGE ═══ -->
+  <div id="page-dashboard" class="page active">
+    <div class="stats-grid">
+      <div class="card stat-card">
+        <div class="stat-icon"><i data-lucide="bar-chart-3"></i></div>
+        <div class="stat-info"><div class="label" data-i18n="equity">Equity</div><div class="value" id="mc-equity">$0.00</div></div>
+      </div>
+      <div class="card stat-card">
+        <div class="stat-icon" style="color:var(--success);"><i data-lucide="trending-up"></i></div>
+        <div class="stat-info"><div class="label" data-i18n="unrealizedPnl">Unrealized P&amp;L</div><div class="value" id="mc-upnl">$0.00</div></div>
+      </div>
+      <div class="card stat-card">
+        <div class="stat-icon" style="color:var(--warning);"><i data-lucide="calendar"></i></div>
+        <div class="stat-info"><div class="label" data-i18n="dailyPnl">Daily P&amp;L</div><div class="value" id="mc-daily">$0.00</div></div>
+      </div>
+      <div class="card stat-card">
+        <div class="stat-icon" style="color:var(--primary);"><i data-lucide="sigma"></i></div>
+        <div class="stat-info"><div class="label" data-i18n="totalPnl">Total P&amp;L</div><div class="value" id="mc-total">$0.00</div></div>
+      </div>
+    </div>
+
+    <div class="charts-grid">
+      <div class="card">
+        <div class="card-header"><div class="card-title" data-i18n="equityCurve">Equity Curve</div><span style="font-size:12px;color:var(--text-sub);font-family:monospace;" id="chart-info">—</span></div>
+        <div style="height:300px;"><canvas id="equityChart"></canvas></div>
+      </div>
+      <div class="card">
+        <div class="card-header"><div class="card-title" data-i18n="weeklyPnl">Weekly P&amp;L</div></div>
+        <div style="height:300px;"><canvas id="revenueChart"></canvas></div>
+      </div>
+    </div>
+
+    <div class="bottom-grid">
+      <!-- Positions / Orders / Trades / Log tabs -->
+      <div class="card" style="padding:0; overflow:hidden;">
+        <div style="padding:16px 20px; display:flex; align-items:center; justify-content:space-between; border-bottom:1px solid var(--border);">
+          <div class="tab-bar" id="btm-tabs" style="margin-bottom:0;">
+            <button class="tab-btn active" data-t="positions" data-i18n="positions">Positions</button>
+            <button class="tab-btn" data-t="orders" data-i18n="orders">Orders</button>
+            <button class="tab-btn" data-t="trades" data-i18n="trades">Trades</button>
+            <button class="tab-btn" data-t="log" data-i18n="log">Log</button>
+          </div>
+          <span style="font-size:12px;color:var(--text-sub);font-weight:600;" id="s-orders-label">0 open orders</span>
+        </div>
+        <div id="tp-positions" class="tab-panel active" style="max-height:360px;overflow-y:auto;">
+          <table><thead><tr><th data-i18n="market">Market</th><th data-i18n="side">Side</th><th data-i18n="size">Size</th><th data-i18n="entry">Entry</th><th data-i18n="mark">Mark</th><th class="td-r" data-i18n="unrealizedPnl">Unrealized P&amp;L</th></tr></thead>
+          <tbody id="pos-tbody"><tr><td colspan="6" class="empty-cell" data-i18n="noPositions">No active positions</td></tr></tbody></table>
+        </div>
+        <div id="tp-orders" class="tab-panel" style="max-height:360px;overflow-y:auto;">
+          <table><thead><tr><th>ID</th><th>Market</th><th>Side</th><th>Price</th><th>Qty</th><th>Filled</th><th>Status</th></tr></thead>
+          <tbody id="ord-tbody"><tr><td colspan="7" class="empty-cell">No open orders</td></tr></tbody></table>
+        </div>
+        <div id="tp-trades" class="tab-panel" style="max-height:360px;overflow-y:auto;">
+          <table><thead><tr><th>Time</th><th>Market</th><th>Side</th><th>Price</th><th>Qty</th><th class="td-r">P&amp;L</th></tr></thead>
+          <tbody id="trd-tbody"><tr><td colspan="6" class="empty-cell">No trades yet</td></tr></tbody></table>
+        </div>
+        <div id="tp-log" class="tab-panel">
+          <div class="log-area" id="log-box"></div>
+        </div>
+      </div>
+
+      <!-- Orderbook + Risk + PnL History -->
+      <div class="card" style="padding:0; overflow:hidden;">
+        <div style="padding:12px 16px; display:flex; align-items:center; justify-content:space-between; border-bottom:1px solid var(--border);">
+          <span style="font-size:14px; font-weight:700;" data-i18n="orderBook">Order Book</span>
+          <div class="ob-tabs" id="ob-tabs">
+            <button class="ob-tab active" data-m="1">BTC</button>
+            <button class="ob-tab" data-m="0">ETH</button>
+          </div>
+        </div>
+        <div class="ob-head"><span>Price</span><span>Size</span></div>
+        <div id="ob-asks" style="height:200px; overflow-y:auto;"></div>
+        <div class="ob-mid" id="ob-spread">—</div>
+        <div id="ob-bids" style="height:200px; overflow-y:auto;"></div>
+        <div class="risk-section">
+          <div class="risk-title" data-i18n="riskMonitor">Risk Monitor</div>
+          <div class="risk-item">
+            <div class="risk-labels"><span class="risk-k" data-i18n="maxDrawdown">Max Drawdown</span><span class="risk-v" id="r-dd">0.0%</span></div>
+            <div class="risk-bar"><div class="risk-fill ok" id="r-dd-bar" style="width:0%"></div></div>
+          </div>
+          <div class="risk-item">
+            <div class="risk-labels"><span class="risk-k" data-i18n="dailyLoss">Daily Loss</span><span class="risk-v" id="r-dl">0.0%</span></div>
+            <div class="risk-bar"><div class="risk-fill ok" id="r-dl-bar" style="width:0%"></div></div>
+          </div>
+        </div>
+        <div class="info-row"><span class="info-k" data-i18n="available">Available</span><span class="info-v" id="s-avail">—</span></div>
+        <div class="info-row"><span class="info-k" data-i18n="peakEquity">Peak Equity</span><span class="info-v" id="s-peak">—</span></div>
+        <div class="info-row"><span class="info-k" data-i18n="openOrders">Open Orders</span><span class="info-v" id="s-orders">0</span></div>
+        <div class="pnl-section">
+          <div class="risk-title" data-i18n="dailyPnlHistory">Daily P&amp;L History</div>
+          <div id="pnl-history"><div class="notif-empty">Loading...</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ STRATEGIES PAGE ═══ -->
+  <div id="page-strategies" class="page">
+    <!-- Trading Controls Card -->
+    <div class="card" style="margin-bottom:24px;">
+      <div class="card-header">
+        <div><div class="card-title" data-i18n="tradingControls">Trading Controls</div><div class="card-subtitle" data-i18n="manageMarkets">Manage markets and trading state</div></div>
+        <span class="badge" id="tc-status-badge">● Loading</span>
+      </div>
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:20px;">
+        <!-- Market Toggles -->
+        <div>
+          <div class="cfg-label" style="margin-bottom:12px;" data-i18n="activeMarkets">Active Markets</div>
+          <div id="tc-markets" style="display:flex; flex-direction:column; gap:10px;">
+            <label class="market-toggle">
+              <input type="checkbox" id="tc-m-1" data-market="1" checked>
+              <span class="mt-slider"></span>
+              <span class="mt-label">BTC <span class="mt-id">(market 1)</span></span>
+            </label>
+            <label class="market-toggle">
+              <input type="checkbox" id="tc-m-0" data-market="0">
+              <span class="mt-slider"></span>
+              <span class="mt-label">ETH <span class="mt-id">(market 0)</span></span>
+            </label>
+          </div>
+          <button class="btn btn-primary" id="btn-save-markets" style="width:100%; margin-top:14px;"><i data-lucide="save" style="width:14px;height:14px;margin-right:6px;vertical-align:middle;"></i>Save Market Config</button>
+          <div class="cfg-msg" id="tc-market-msg" style="margin-top:8px;"></div>
+        </div>
+        <!-- Actions -->
+        <div>
+          <div class="cfg-label" style="margin-bottom:12px;" data-i18n="quickActions">Quick Actions</div>
+          <div style="display:flex; flex-direction:column; gap:10px;">
+            <button class="btn btn-pause" id="btn-pause-trading" style="width:100%;">
+              <i data-lucide="pause-circle" style="width:16px;height:16px;margin-right:8px;vertical-align:middle;"></i>
+              <span id="btn-pause-text">Pause Trading</span>
+            </button>
+            <button class="btn btn-outline btn-danger-outline" id="btn-cancel-all" style="width:100%;">
+              <i data-lucide="x-circle" style="width:16px;height:16px;margin-right:8px;vertical-align:middle;"></i>Cancel All Orders
+            </button>
+          </div>
+          <div class="cfg-msg" id="tc-action-msg" style="margin-top:8px;"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="strat-grid">
+      <div class="card">
+        <div class="card-header">
+          <div><div class="card-title" id="strat-name">Grid Strategy</div><div class="card-subtitle">Configuration</div></div>
+          <span class="badge badge-up">● Active</span>
+        </div>
+        <div class="cfg-group"><label class="cfg-label">Grid Count</label><input type="number" class="cfg-input" id="cfg-gc" value="6" min="4" max="50"></div>
+        <div class="cfg-group"><label class="cfg-label" data-i18n="investPerGrid">Investment per Grid ($)</label><input type="number" class="cfg-input" id="cfg-inv" value="8" min="1" max="100"></div>
+        <div class="cfg-group"><label class="cfg-label" data-i18n="priceDeviation">Price Deviation (%)</label><input type="number" class="cfg-input" id="cfg-dev" value="0.012" step="0.001" min="0.001" max="0.1"></div>
+        <button class="btn btn-primary" id="btn-apply" style="width:100%;">Apply Changes</button>
+        <div class="cfg-msg" id="cfg-msg"></div>
+      </div>
+      <div class="card">
+        <div class="card-header"><div class="card-title" data-i18n="performance">Performance</div><span class="badge badge-info">Live</span></div>
+        <div class="info-row"><span class="info-k" data-i18n="winRate">Win Rate</span><span class="info-v c-up" id="sp-winrate">—</span></div>
+        <div class="info-row"><span class="info-k" data-i18n="totalTrades">Total Trades</span><span class="info-v" id="sp-trades">0</span></div>
+        <div class="info-row"><span class="info-k">Total P&amp;L</span><span class="info-v" id="sp-pnl">$0.00</span></div>
+        <div class="info-row"><span class="info-k" data-i18n="activeMarkets">Active Markets</span><span class="info-v" id="sp-markets">—</span></div>
+        <div class="info-row"><span class="info-k">Risk: SL / TP</span><span class="info-v">3% / 5%</span></div>
+        <div class="info-row"><span class="info-k" data-i18n="maxLeverage">Max Leverage</span><span class="info-v">5x</span></div>
+        <div class="info-row"><span class="info-k">Max Open Orders</span><span class="info-v">8</span></div>
+      </div>
+      <!-- DCA Strategy Card -->
+      <div class="card">
+        <div class="card-header">
+          <div><div class="card-title">DCA Strategy</div><div class="card-subtitle" data-i18n="dcaSub">Dollar-Cost Averaging</div></div>
+          <span class="badge badge-warn">○ Inactive</span>
+        </div>
+        <div class="cfg-group"><label class="cfg-label" data-i18n="buyInterval">Buy Interval (hours)</label><input type="number" class="cfg-input" id="cfg-dca-interval" value="4" min="1" max="168"></div>
+        <div class="cfg-group"><label class="cfg-label" data-i18n="amountPerBuy">Amount per Buy ($)</label><input type="number" class="cfg-input" id="cfg-dca-amount" value="5" min="1" max="50"></div>
+        <div class="cfg-group"><label class="cfg-label" data-i18n="dipThreshold">Dip Threshold (%)</label><input type="number" class="cfg-input" id="cfg-dca-dip" value="2" step="0.5" min="0" max="20"></div>
+        <button class="btn btn-outline" style="width:100%;opacity:0.6;" disabled>Coming Soon</button>
+      </div>
+      <!-- Trend Following Strategy Card -->
+      <div class="card">
+        <div class="card-header">
+          <div><div class="card-title">Trend Following</div><div class="card-subtitle" data-i18n="trendSub">EMA Crossover + RSI</div></div>
+          <span class="badge badge-warn">○ Inactive</span>
+        </div>
+        <div class="cfg-group"><label class="cfg-label" data-i18n="fastEma">Fast EMA Period</label><input type="number" class="cfg-input" id="cfg-trend-fast" value="9" min="3" max="50"></div>
+        <div class="cfg-group"><label class="cfg-label" data-i18n="slowEma">Slow EMA Period</label><input type="number" class="cfg-input" id="cfg-trend-slow" value="21" min="10" max="200"></div>
+        <div class="cfg-group"><label class="cfg-label" data-i18n="rsiPeriod">RSI Period</label><input type="number" class="cfg-input" id="cfg-trend-rsi" value="14" min="5" max="50"></div>
+        <button class="btn btn-outline" style="width:100%;opacity:0.6;" disabled>Coming Soon</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ PORTFOLIO PAGE ═══ -->
+  <div id="page-portfolio" class="page">
+    <div class="stats-grid">
+      <div class="card stat-card"><div class="stat-icon"><i data-lucide="wallet"></i></div><div class="stat-info"><div class="label">Equity</div><div class="value" id="pf-equity">$0.00</div></div></div>
+      <div class="card stat-card"><div class="stat-icon" style="color:var(--success);"><i data-lucide="landmark"></i></div><div class="stat-info"><div class="label">Available</div><div class="value" id="pf-avail">$0.00</div></div></div>
+      <div class="card stat-card"><div class="stat-icon" style="color:var(--warning);"><i data-lucide="layers"></i></div><div class="stat-info"><div class="label">Positions</div><div class="value" id="pf-pos-count">0</div></div></div>
+      <div class="card stat-card"><div class="stat-icon" style="color:var(--primary);"><i data-lucide="list-ordered"></i></div><div class="stat-info"><div class="label">Open Orders</div><div class="value" id="pf-ord-count">0</div></div></div>
+    </div>
+    <div class="card" style="margin-bottom:20px;">
+      <div class="card-header"><div class="card-title">Positions</div></div>
+      <table><thead><tr><th>Market</th><th>Side</th><th>Size</th><th>Entry</th><th>Mark</th><th class="td-r">Unrealized P&amp;L</th></tr></thead>
+      <tbody id="pf-pos-tbody"><tr><td colspan="6" class="empty-cell">No positions</td></tr></tbody></table>
+    </div>
+    <div class="card">
+      <div class="card-header"><div class="card-title">Open Orders</div></div>
+      <table><thead><tr><th>ID</th><th>Market</th><th>Side</th><th>Price</th><th>Qty</th><th>Filled</th><th>Status</th></tr></thead>
+      <tbody id="pf-ord-tbody"><tr><td colspan="7" class="empty-cell">No open orders</td></tr></tbody></table>
+    </div>
+  </div>
+
+  <!-- ═══ HISTORY PAGE ═══ -->
+  <div id="page-history" class="page">
+    <div class="card-header" style="margin-bottom:20px;">
+      <div><div class="card-title" style="font-size:24px;" data-i18n="tradeHistory">Trade History</div><div class="card-subtitle" data-i18n="fullAuditTrail">Full audit trail of all executed trades</div></div>
+      <div style="display:flex;gap:10px;">
+        <button class="btn btn-outline" id="btn-export"><i data-lucide="download" style="width:14px;height:14px;margin-right:6px;vertical-align:middle;"></i>Export CSV</button>
+      </div>
+    </div>
+    <div class="stats-grid" style="margin-bottom:20px;">
+      <div class="card stat-card"><div class="stat-icon" style="color:var(--success);"><i data-lucide="trending-up"></i></div><div class="stat-info"><div class="label" data-i18n="totalPnl">Total PNL</div><div class="value" id="hc-pnl">$0.00</div></div></div>
+      <div class="card stat-card"><div class="stat-icon" style="color:var(--primary);"><i data-lucide="target"></i></div><div class="stat-info"><div class="label" data-i18n="winRate">Win Rate</div><div class="value" id="hc-winrate">0%</div></div></div>
+      <div class="card stat-card"><div class="stat-icon" style="color:var(--warning);"><i data-lucide="activity"></i></div><div class="stat-info"><div class="label" data-i18n="volume">Volume</div><div class="value" id="hc-volume">$0</div></div></div>
+      <div class="card stat-card"><div class="stat-icon"><i data-lucide="timer"></i></div><div class="stat-info"><div class="label" data-i18n="avgDuration">Avg Duration</div><div class="value" id="hc-duration">—</div></div></div>
+    </div>
+    <div class="filter-bar">
+      <div class="filter-search-wrap"><i data-lucide="search"></i><input type="text" class="filter-search" id="h-search" placeholder="Search by asset, side..."></div>
+      <div class="filter-group">
+        <button class="fpill active" data-asset="all">ALL</button>
+        <button class="fpill" data-asset="BTC">BTC</button>
+        <button class="fpill" data-asset="ETH">ETH</button>
+      </div>
+    </div>
+    <div class="card" style="padding:0; overflow:hidden;">
+      <table><thead><tr><th data-i18n="time">Time</th><th data-i18n="asset">Asset</th><th data-i18n="side">Side</th><th data-i18n="price">Price</th><th data-i18n="qty">Qty</th><th class="td-r" data-i18n="pnl">PNL</th></tr></thead>
+      <tbody id="history-tbody"><tr><td colspan="6" class="empty-cell" data-i18n="noHistory">No trade history</td></tr></tbody></table>
+    </div>
+  </div>
+
+  <!-- ═══ SETTINGS PAGE ═══ -->
+  <div id="page-settings" class="page">
+    <div class="settings-grid">
+      <div class="card">
+        <div class="card-header"><div class="card-title" data-i18n="systemStatus">System Status</div></div>
+        <div class="info-row"><span class="info-k" data-i18n="botStatus">Bot Status</span><span class="info-v" id="set-status" style="color:var(--success);">Running</span></div>
+        <div class="info-row"><span class="info-k" data-i18n="apiConnection">API Connection</span><span class="info-v" id="set-conn" style="color:var(--success);">Stable</span></div>
+        <div class="info-row"><span class="info-k">Version</span><span class="info-v" id="set-version">—</span></div>
+        <div class="info-row"><span class="info-k">Account Index</span><span class="info-v" id="set-account">—</span></div>
+        <div class="info-row"><span class="info-k">Exchange</span><span class="info-v">Lighter.xyz (mainnet)</span></div>
+      </div>
+      <div class="card">
+        <div class="card-header"><div class="card-title" data-i18n="riskLimits">Risk Limits</div></div>
+        <div class="info-row"><span class="info-k" data-i18n="maxDrawdown">Max Drawdown</span><span class="info-v">10%</span></div>
+        <div class="info-row"><span class="info-k" data-i18n="dailyLoss">Daily Loss Limit</span><span class="info-v">5%</span></div>
+        <div class="info-row"><span class="info-k">Stop Loss</span><span class="info-v">3%</span></div>
+        <div class="info-row"><span class="info-k">Take Profit</span><span class="info-v">5%</span></div>
+        <div class="info-row"><span class="info-k">Max Leverage</span><span class="info-v">5x</span></div>
+        <div class="info-row"><span class="info-k">Max Orders</span><span class="info-v">8</span></div>
+      </div>
+      <div class="card">
+        <div class="card-header"><div class="card-title" data-i18n="theme">Theme</div></div>
+        <p style="color:var(--text-sub); font-size:13px; margin-bottom:16px;" data-i18n="themeDesc">Switch between light and dark mode for comfortable viewing.</p>
+        <button class="btn btn-outline" id="btn-theme-settings" style="width:100%;">
+          <i data-lucide="sun" style="width:14px;height:14px;margin-right:6px;vertical-align:middle;"></i><span data-i18n="toggleTheme">Toggle Theme</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+</main>
+
+<script src="/app.js"></script>
+<script>lucide.createIcons();</script>
+</body>
+</html>

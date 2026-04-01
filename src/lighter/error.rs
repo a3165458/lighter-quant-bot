@@ -18,6 +18,9 @@ pub enum LighterError {
     #[error("JSON解析失败: {0}")]
     JsonError(#[from] serde_json::Error),
 
+    #[error("FFI错误: {0}")]
+    FfiError(String),
+
     #[error("连接超时")]
     Timeout,
 

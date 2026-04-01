@@ -134,6 +134,7 @@ impl Strategy for TrendStrategy {
                         let quantity = 0.01;
                         signals.push(TradeSignal {
                             symbol: symbol.clone(),
+                            market_id: ob.market_id,
                             side: Side::Buy,
                             price: mid_price,
                             quantity,
@@ -147,6 +148,7 @@ impl Strategy for TrendStrategy {
                         let quantity = 0.01;
                         signals.push(TradeSignal {
                             symbol: symbol.clone(),
+                            market_id: ob.market_id,
                             side: Side::Sell,
                             price: mid_price,
                             quantity,
@@ -166,6 +168,7 @@ impl Strategy for TrendStrategy {
                             let exit_side = if side == Side::Buy { Side::Sell } else { Side::Buy };
                             signals.push(TradeSignal {
                                 symbol: symbol.clone(),
+                                market_id: ob.market_id,
                                 side: exit_side,
                                 price: mid_price,
                                 quantity: 0.01,
@@ -177,6 +180,7 @@ impl Strategy for TrendStrategy {
                             let exit_side = if side == Side::Buy { Side::Sell } else { Side::Buy };
                             signals.push(TradeSignal {
                                 symbol: symbol.clone(),
+                                market_id: ob.market_id,
                                 side: exit_side,
                                 price: mid_price,
                                 quantity: 0.01,

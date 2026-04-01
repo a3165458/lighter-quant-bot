@@ -1,0 +1,13 @@
+target/
+data/
+logs/
+.env
+.git/
+.github/
+*.log
+*.tmp
+*.bak
+lighter-signer.so
+ecosystem*.js
+start.sh
+backtests/results/

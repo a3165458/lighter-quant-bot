@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Strategy Lab - Lighter Bot</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&display=swap" rel="stylesheet">
+<script src="https://unpkg.com/lucide@latest"></script>
+<style>
+/* ── Shared Theme Variables ── */
+:root, [data-theme="light"] {
+  --bg-body:#F4F7FE; --bg-card:#FFFFFF; --bg-input:#F4F7FE;
+  --primary:#4318FF; --primary-hover:#3311DB; --primary-dim:rgba(67,24,255,0.08);
+  --primary-gradient:linear-gradient(135deg,#868CFF 0%,#4318FF 100%);
+  --text-main:#2B3674; --text-sub:#A3AED0; --text-muted:#C4CAD8;
+  --success:#05CD99; --success-bg:#E6FFF5;
+  --danger:#EE5D50; --danger-bg:#FFEFEF;
+  --warning:#FFB547; --warning-bg:#FFF8EB;
+  --border:#E9EDF7;
+  --shadow:0 18px 40px rgba(112,144,176,0.12);
+  --shadow-sm:0 4px 12px rgba(112,144,176,0.08);
+  --radius-lg:20px; --radius-md:14px;
+}
+[data-theme="dark"] {
+  --bg-body:#0B1437; --bg-card:#111C44; --bg-input:#0B1437;
+  --primary:#7551FF; --primary-hover:#6340E8; --primary-dim:rgba(117,81,255,0.15);
+  --primary-gradient:linear-gradient(135deg,#868CFF 0%,#7551FF 100%);
+  --text-main:#FFFFFF; --text-sub:#A3AED0; --text-muted:#56607B;
+  --success:#01B574; --success-bg:rgba(1,181,116,0.12);
+  --danger:#E31A1A; --danger-bg:rgba(227,26,26,0.12);
+  --warning:#FFB547; --warning-bg:rgba(255,181,71,0.12);
+  --border:#1B254B;
+  --shadow:0 18px 40px rgba(0,0,0,0.3);
+  --shadow-sm:0 4px 12px rgba(0,0,0,0.2);
+}
+
+*,*::before,*::after { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:'DM Sans',sans-serif; background:var(--bg-body); color:var(--text-main); min-height:100vh; transition:background 0.3s,color 0.3s; }
+::-webkit-scrollbar { width:6px; }
+::-webkit-scrollbar-track { background:var(--bg-input); }
+::-webkit-scrollbar-thumb { background:var(--border); border-radius:3px; }
+
+/* ── Header ── */
+.header {
+  display:flex; justify-content:space-between; align-items:center;
+  padding:16px 32px; background:var(--bg-card); border-bottom:1px solid var(--border);
+  box-shadow:var(--shadow-sm); transition:background 0.3s,border-color 0.3s;
+}
+.header h1 { font-size:20px; font-weight:700; display:flex; align-items:center; gap:10px; }
+.header h1 .ai-badge {
+  background:var(--primary-gradient); color:#fff; padding:3px 12px;
+  border-radius:8px; font-size:13px; font-weight:700;
+}
+.header-right { display:flex; align-items:center; gap:10px; }
+.nav-link {
+  color:var(--primary); text-decoration:none; font-size:13px; font-weight:600;
+  padding:8px 16px; border:1px solid var(--primary); border-radius:12px;
+  transition:all 0.15s;
+}
+.nav-link:hover { background:var(--primary-dim); }
+.theme-btn {
+  width:36px; height:36px; border-radius:50%; border:none;
+  background:var(--bg-input); color:var(--text-sub); cursor:pointer;
+  display:flex; align-items:center; justify-content:center; transition:all 0.15s;
+}
+.theme-btn:hover { background:var(--border); color:var(--text-main); }
+.theme-btn svg { width:18px; height:18px; }
+
+/* ── Layout ── */
+.layout { display:grid; grid-template-columns:380px 1fr; gap:24px; padding:24px 32px; min-height:calc(100vh - 64px); }
+@media (max-width:900px) { .layout { grid-template-columns:1fr; } }
+
+/* ── Cards / Panels ── */
+.panel {
+  background:var(--bg-card); border-radius:var(--radius-lg); padding:24px;
+  box-shadow:var(--shadow-sm); transition:background 0.3s;
+}
+.panel-title {
+  font-size:14px; font-weight:700; color:var(--primary); text-transform:uppercase;
+  letter-spacing:0.6px; margin-bottom:16px; display:flex; align-items:center; gap:8px;
+}
+
+/* ── Forms ── */
+.form-group { margin-bottom:16px; }
+.form-label {
+  display:block; font-size:11px; color:var(--text-sub); margin-bottom:6px;
+  font-weight:700; text-transform:uppercase; letter-spacing:0.5px;
+}
+.form-input, .form-select, .form-textarea {
+  width:100%; padding:12px 14px; border-radius:12px;
+  border:1px solid var(--border); background:var(--bg-input);
+  color:var(--text-main); font-weight:600; font-size:14px;
+  font-family:inherit; transition:border 0.2s,background 0.3s;
+}
+.form-input:focus, .form-select:focus, .form-textarea:focus { outline:none; border-color:var(--primary); }
+.form-textarea { min-height:80px; resize:vertical; font-family:'SF Mono','Fira Code',monospace; font-size:12px; }
+.form-row { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+
+/* ── Buttons ── */
+.btn {
+  padding:12px 24px; border-radius:12px; border:none; cursor:pointer;
+  font-size:13px; font-weight:700; font-family:inherit; width:100%;
+  transition:all 0.15s;
+}
+.btn-primary { background:var(--primary); color:#fff; }
+.btn-primary:hover { background:var(--primary-hover); transform:translateY(-1px); }
+.btn-ai { background:var(--primary-gradient); color:#fff; }
+.btn-ai:hover { transform:translateY(-1px); filter:brightness(1.1); }
+.btn:disabled { opacity:0.5; cursor:not-allowed; transform:none !important; }
+
+/* ── AI Section ── */
+.ai-section {
+  background:var(--bg-card); border:1px solid var(--border); border-radius:var(--radius-lg);
+  padding:24px; margin-top:20px; box-shadow:var(--shadow-sm); transition:background 0.3s,border-color 0.3s;
+}
+.ai-section .panel-title { color:var(--warning); }
+
+/* ── Results ── */
+.results-empty { display:flex; align-items:center; justify-content:center; height:300px; color:var(--text-sub); font-size:14px; font-weight:500; }
+.result-card {
+  background:var(--bg-input); border:1px solid var(--border); border-radius:var(--radius-md);
+  padding:20px; margin-bottom:16px; transition:background 0.3s,border-color 0.3s;
+}
+.result-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; }
+.result-title { font-size:15px; font-weight:700; }
+.result-badge { padding:4px 12px; border-radius:10px; font-size:11px; font-weight:700; }
+.badge-profit { background:var(--success-bg); color:var(--success); }
+.badge-loss { background:var(--danger-bg); color:var(--danger); }
+
+.metrics-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin-bottom:14px; }
+@media (max-width:600px) { .metrics-grid { grid-template-columns:repeat(2,1fr); } }
+.metric { text-align:center; padding:8px; background:var(--bg-card); border-radius:10px; transition:background 0.3s; }
+.metric-value { font-size:18px; font-weight:700; font-variant-numeric:tabular-nums; }
+.metric-label { font-size:10px; color:var(--text-sub); text-transform:uppercase; margin-top:2px; font-weight:600; }
+
+.positive { color:var(--success) !important; }
+.negative { color:var(--danger) !important; }
+
+.chart-container { width:100%; height:140px; margin-top:8px; }
+.chart-canvas { width:100%; height:100%; }
+
+table { width:100%; border-collapse:collapse; font-size:12px; margin-top:10px; }
+th {
+  text-align:left; padding:10px 12px; color:var(--text-sub); font-size:10px;
+  text-transform:uppercase; letter-spacing:0.4px; border-bottom:1px solid var(--border); font-weight:600;
+}
+td { padding:10px 12px; border-bottom:1px solid var(--border); font-weight:500; font-variant-numeric:tabular-nums; }
+tr:hover td { background:var(--bg-input); }
+
+.spinner {
+  display:inline-block; width:16px; height:16px; border:2px solid rgba(255,255,255,0.3);
+  border-top-color:#fff; border-radius:50%; animation:spin 0.8s linear infinite;
+  vertical-align:middle; margin-right:6px;
+}
+@keyframes spin { to { transform:rotate(360deg); } }
+
+.log-area {
+  background:var(--bg-input); border:1px solid var(--border); border-radius:10px;
+  padding:10px 12px; font-family:'SF Mono','Fira Code',monospace; font-size:11px;
+  max-height:150px; overflow-y:auto; color:var(--text-sub); margin-top:10px;
+  transition:background 0.3s,border-color 0.3s;
+}
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>🤖 <span class="ai-badge">AI</span> Strategy Lab</h1>
+  <div class="header-right">
+    <a href="/" class="nav-link">← Dashboard</a>
+    <button class="theme-btn" id="ai-theme-btn" title="Toggle theme"><i data-lucide="moon" id="ai-theme-icon"></i></button>
+  </div>
+</div>
+
+<div class="layout">
+  <div>
+    <div class="panel">
+      <div class="panel-title"><i data-lucide="file-text" style="width:16px;height:16px;"></i> Backtest Configuration</div>
+      <div class="form-group">
+        <label class="form-label">Strategy</label>
+        <select class="form-select" id="bt-strategy">
+          <option value="grid">Grid Trading</option>
+          <option value="trend">Trend Following</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Data File</label>
+        <select class="form-select" id="bt-data">
+          <option value="BTC-synthetic-30d-1h.csv">BTC Synthetic 30d 1H</option>
+          <option value="ETH-synthetic-30d-1h.csv">ETH Synthetic 30d 1H</option>
+          <option value="BTC-15m-20260329-20260329.csv">BTC Real 15m (Mar 29)</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Start Date</label>
+          <input type="date" class="form-input" id="bt-start" value="2026-02-28">
+        </div>
+        <div class="form-group">
+          <label class="form-label">End Date</label>
+          <input type="date" class="form-input" id="bt-end" value="2026-03-30">
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Initial Capital ($)</label>
+        <input type="number" class="form-input" id="bt-capital" value="125" min="10" step="10">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Strategy Parameters</label>
+        <input type="text" class="form-input" id="bt-params" placeholder="grid_count=10,investment=8,deviation=0.012">
+      </div>
+      <button class="btn btn-primary" id="btn-run-backtest" onclick="runBacktest()">▶ Run Backtest</button>
+    </div>
+
+    <div class="ai-section">
+      <div class="panel-title"><i data-lucide="sparkles" style="width:16px;height:16px;"></i> AI Strategy Advisor</div>
+      <div class="form-group">
+        <label class="form-label">AI Provider</label>
+        <select class="form-select" id="ai-provider">
+          <option value="openai">OpenAI (GPT-4)</option>
+          <option value="zhipu">ZhiPu (GLM-4)</option>
+          <option value="custom">Custom API</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">API Key</label>
+        <input type="password" class="form-input" id="ai-key" placeholder="sk-...">
+      </div>
+      <div class="form-group" id="ai-custom-url-group" style="display:none">
+        <label class="form-label">Custom API URL</label>
+        <input type="text" class="form-input" id="ai-url" placeholder="https://api.example.com/v1/chat/completions">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Optimization Goal</label>
+        <select class="form-select" id="ai-goal">
+          <option value="sharpe">Maximize Sharpe Ratio</option>
+          <option value="return">Maximize Return</option>
+          <option value="drawdown">Minimize Max Drawdown</option>
+          <option value="balanced">Balanced (Return + Risk)</option>
+        </select>
+      </div>
+      <button class="btn btn-ai" id="btn-ai-optimize" onclick="aiOptimize()">🤖 AI Optimize Parameters</button>
+      <div class="log-area" id="ai-log" style="display:none"></div>
+    </div>
+  </div>
+
+  <div class="panel" id="results-panel">
+    <div class="panel-title"><i data-lucide="bar-chart-3" style="width:16px;height:16px;"></i> Results</div>
+    <div class="results-empty" id="results-empty">
+      Run a backtest or AI optimization to see results here
+    </div>
+    <div id="results-content" style="display:none"></div>
+  </div>
+</div>
+
+<script>
+// Theme sync with dashboard
+(function(){
+  function getTheme(){ return localStorage.getItem('lighter-theme') || (window.matchMedia('(prefers-color-scheme:dark)').matches ? 'dark' : 'light'); }
+  function apply(t){
+    document.documentElement.setAttribute('data-theme',t);
+    localStorage.setItem('lighter-theme',t);
+    var icon=document.getElementById('ai-theme-icon');
+    if(icon){icon.setAttribute('data-lucide',t==='dark'?'sun':'moon');lucide.createIcons();}
+  }
+  apply(getTheme());
+  document.getElementById('ai-theme-btn').addEventListener('click',function(){
+    apply(document.documentElement.getAttribute('data-theme')==='dark'?'light':'dark');
+  });
+})();
+</script>
+<script src="/ai.js"></script>
+<script>lucide.createIcons();</script>
+</body>
+</html>
