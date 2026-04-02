@@ -157,10 +157,8 @@ impl LighterClient {
             .and_then(|s| s.parse::<f64>().ok())
             .unwrap_or(collateral);
 
-        let total_equity = account["equity"]
-            .as_str()
-            .and_then(|s| s.parse::<f64>().ok())
-            .unwrap_or(collateral);
+        // Note: Lighter API has no "equity" field, falls back to collateral.
+        // True equity is computed below as collateral + Σ(unrealized_pnl).
 
         let mut positions = Vec::new();
         if let Some(pos_arr) = account["positions"].as_array() {
@@ -216,6 +214,11 @@ impl LighterClient {
             }
         }
 
+        // Lighter API has no separate "equity" field — `collateral` is the margin balance
+        // which does NOT include unrealized PnL. True equity = collateral + Σ(unrealized_pnl).
+        let total_unrealized: f64 = positions.iter().map(|p| p.unrealized_pnl).sum();
+        let true_equity = collateral + total_unrealized;
+
         Ok(AccountInfo {
             balances: vec![Balance {
                 asset: "USDC".into(),
@@ -223,7 +226,7 @@ impl LighterClient {
                 locked: 0.0,
             }],
             positions,
-            total_equity,
+            total_equity: true_equity,
         })
     }
 
