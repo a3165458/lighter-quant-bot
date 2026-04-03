@@ -80,8 +80,12 @@ pub fn create_strategy_with_params(name: &str, params: Option<&str>) -> Result<B
     match name {
         "grid_trading" | "grid" => {
             let grid_count = kv.get("grid_count").and_then(|v| v.parse().ok()).unwrap_or(10);
-            let investment = kv.get("investment").and_then(|v| v.parse().ok()).unwrap_or(8.0);
-            let deviation = kv.get("deviation").and_then(|v| v.parse().ok()).unwrap_or(0.008);
+            let investment = kv.get("investment_per_grid")
+                .or_else(|| kv.get("investment"))
+                .and_then(|v| v.parse().ok()).unwrap_or(8.0);
+            let deviation = kv.get("price_deviation")
+                .or_else(|| kv.get("deviation"))
+                .and_then(|v| v.parse().ok()).unwrap_or(0.008);
             Ok(Box::new(grid_strategy::GridStrategy::new(grid_count, investment, deviation)))
         }
         "trend_following" | "trend" => {
