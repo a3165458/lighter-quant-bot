@@ -26,7 +26,7 @@ trading:
     grid_trading:
       enabled: true
       grid_count: 6
-      investment_per_grid: 8
+      investment_per_grid: 30
       price_deviation: 0.012
 
     trend_following:

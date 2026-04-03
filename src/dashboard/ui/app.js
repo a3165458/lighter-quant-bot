@@ -252,7 +252,7 @@
             $('current-page-title').innerText = this.innerText.trim();
             activePage = page;
             if (page === 'dashboard') setTimeout(initCharts, 100);
-            if (page === 'history') renderHistory();
+            if (page === 'history') { renderHistory(); renderPositionSummary(); }
         });
     });
 
@@ -374,12 +374,16 @@
             if (data.equity_history) {
                 equityData = data.equity_history.map(p => ({ t: p.t * 1000, v: p.v }));
                 updateEquityChart();
-                updateRevenueChart(data.daily_pnl_map || {});
+                const pnlMap = Object.assign({}, data.daily_pnl_map || {});
+                const todayKey = new Date().toISOString().split('T')[0];
+                if (data.daily_realized_pnl !== undefined) pnlMap[todayKey] = data.daily_realized_pnl;
+                updateRevenueChart(pnlMap);
             }
             if (data.trades) {
                 allTrades = data.trades;
                 renderHistory();
                 computeHistoryStats();
+                renderPositionSummary();
             }
             if (data.total_realized_pnl !== undefined) {
                 const el = $('mc-total');
@@ -768,6 +772,40 @@
         setVal('sp-trades', allTrades.length);
     }
 
+    function renderPositionSummary() {
+        const tb = $('pos-summary-tbody');
+        if (!tb) return;
+        const closeTrades = allTrades.filter(t => {
+            const action = t.action || t.close_type || '';
+            return action.includes('Close') || action.includes('Stop') || action.includes('Emergency');
+        });
+        if (closeTrades.length === 0) {
+            tb.innerHTML = '<tr><td colspan="5" class="empty-cell">No closed positions yet</td></tr>';
+            return;
+        }
+        const groups = {};
+        closeTrades.forEach(t => {
+            const asset = t.symbol || t.market || 'Unknown';
+            if (!groups[asset]) groups[asset] = { wins: 0, losses: 0, totalPnl: 0, count: 0 };
+            const pnl = t.pnl || 0;
+            groups[asset].count++;
+            groups[asset].totalPnl += pnl;
+            if (pnl > 0) groups[asset].wins++;
+            else groups[asset].losses++;
+        });
+        let totalPnl = 0, totalCount = 0, totalWins = 0;
+        const rows = Object.entries(groups).map(([asset, g]) => {
+            const wr = g.count > 0 ? (g.wins / g.count * 100).toFixed(1) : '0.0';
+            totalPnl += g.totalPnl;
+            totalCount += g.count;
+            totalWins += g.wins;
+            return `<tr><td><b>${asset}</b></td><td>${g.count}</td><td><span class="c-up">${g.wins}W</span> / <span class="c-down">${g.losses}L</span></td><td>${wr}%</td><td class="td-r ${pnlClass(g.totalPnl)}">${fmtPnl(g.totalPnl)}</td></tr>`;
+        });
+        const totalWr = totalCount > 0 ? (totalWins / totalCount * 100).toFixed(1) : '0.0';
+        rows.push(`<tr style="border-top:2px solid var(--border);font-weight:600;"><td>Total</td><td>${totalCount}</td><td><span class="c-up">${totalWins}W</span> / <span class="c-down">${totalCount - totalWins}L</span></td><td>${totalWr}%</td><td class="td-r ${pnlClass(totalPnl)}">${fmtPnl(totalPnl)}</td></tr>`);
+        tb.innerHTML = rows.join('');
+    }
+
     // ── Export CSV ──
     if ($('btn-export')) {
         $('btn-export').addEventListener('click', () => {
@@ -826,7 +864,7 @@
         equityChart = new Chart(ctxEq.getContext('2d'), {
             type: 'line',
             data: {
-                labels: equityData.map(d => new Date(d.t).toLocaleTimeString()),
+                labels: equityData.map(d => { const dt = new Date(d.t); return dt.toLocaleDateString(undefined, {month:'short', day:'numeric'}) + ' ' + dt.toLocaleTimeString(undefined, {hour:'2-digit', minute:'2-digit'}); }),
                 datasets: [{
                     label: 'Equity',
                     data: equityData.map(d => d.v),
@@ -862,7 +900,7 @@
                     }
                 },
                 scales: {
-                    x: { display: false },
+                    x: { display: true, grid: { display: false }, ticks: { color: tickColor, font: { size: 10 }, maxTicksLimit: 6, maxRotation: 0 } },
                     y: { grid: { color: gridColor, drawBorder: false }, ticks: { color: tickColor, font: { weight: '500' } } }
                 }
             }
@@ -898,7 +936,7 @@
 
     function updateEquityChart() {
         if (!equityChart) return;
-        equityChart.data.labels = equityData.map(d => new Date(d.t).toLocaleTimeString());
+        equityChart.data.labels = equityData.map(d => { const dt = new Date(d.t); return dt.toLocaleDateString(undefined, {month:'short', day:'numeric'}) + ' ' + dt.toLocaleTimeString(undefined, {hour:'2-digit', minute:'2-digit'}); });
         equityChart.data.datasets[0].data = equityData.map(d => d.v);
         equityChart.update('none');
     }

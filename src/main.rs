@@ -276,6 +276,22 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
         ds.restore_pnl(&persisted);
     }
 
+    // Restore persistent strategy config from disk
+    if let Some(saved) = dashboard::server::PersistentStrategyConfig::load() {
+        let mut ds = dash_state.write().await;
+        info!("📂 Loaded strategy config: {} params={:?}", saved.strategy_name, saved.strategy_params);
+        ds.strategy_name = saved.strategy_name;
+        ds.strategy_params = saved.strategy_params;
+    }
+
+    // Restore persistent risk config from disk
+    if let Some(saved) = dashboard::server::PersistentRiskConfig::load() {
+        let mut ds = dash_state.write().await;
+        info!("📂 Loaded risk config: leverage_limit={}", saved.leverage_limit);
+        ds.risk_config = saved.risk_config;
+        ds.leverage_limit = saved.leverage_limit;
+    }
+
     // Start dashboard server
     let dash_port = settings.get_int("dashboard.port").unwrap_or(2028) as u16;
     let dash_state_clone = dash_state.clone();
@@ -296,18 +312,52 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
         rm.update_equity(equity);
     }
     // Sync initial risk config from RiskManager to DashboardState
+    // If we loaded persistent config, apply it to risk manager
     {
-        let rm = risk_manager.lock().await;
-        let mut ds = dash_state.write().await;
-        ds.risk_config = rm.get_config();
-        ds.risk_config["leverage_limit"] = serde_json::json!(ds.leverage_limit);
+        let ds = dash_state.read().await;
+        if ds.leverage_limit != 3.0 {
+            // Persistent config was loaded — apply it to risk manager
+            let mut rm = risk_manager.lock().await;
+            let cfg = &ds.risk_config;
+            rm.update_params(
+                cfg.get("max_drawdown_pct").and_then(|v| v.as_f64()),
+                cfg.get("daily_loss_limit_pct").and_then(|v| v.as_f64()),
+                cfg.get("max_leverage").and_then(|v| v.as_f64()),
+                cfg.get("position_stop_loss_pct").and_then(|v| v.as_f64()),
+                cfg.get("position_take_profit_pct").and_then(|v| v.as_f64()),
+            );
+        } else {
+            // No persistent config — sync risk manager defaults to dashboard
+            let rm = risk_manager.lock().await;
+            drop(ds);
+            let mut ds = dash_state.write().await;
+            ds.risk_config = rm.get_config();
+            ds.risk_config["leverage_limit"] = serde_json::json!(ds.leverage_limit);
+        }
     }
 
     // Initialize strategy (wrapped in Arc<RwLock> for runtime switching)
-    let strategy: Arc<tokio::sync::RwLock<Box<dyn strategy::Strategy>>> = Arc::new(
-        tokio::sync::RwLock::new(strategy::create_strategy(&settings)
-            .context("Failed to initialize strategy")?)
-    );
+    // Use persisted params if available, otherwise fall back to settings.yaml
+    let strategy: Arc<tokio::sync::RwLock<Box<dyn strategy::Strategy>>> = {
+        let ds = dash_state.read().await;
+        let has_saved_params = !ds.strategy_params.is_empty();
+        if has_saved_params {
+            let params_str = ds.strategy_params.iter()
+                .map(|(k, v)| format!("{}={}", k, v))
+                .collect::<Vec<_>>()
+                .join(",");
+            info!("📂 Creating strategy from saved config: {} params={}", ds.strategy_name, params_str);
+            let strat = strategy::create_strategy_with_params(&ds.strategy_name, Some(&params_str))
+                .unwrap_or_else(|e| {
+                    warn!("Failed to create strategy from saved params: {}, falling back to defaults", e);
+                    strategy::create_strategy(&settings).expect("Failed to create default strategy")
+                });
+            Arc::new(tokio::sync::RwLock::new(strat))
+        } else {
+            Arc::new(tokio::sync::RwLock::new(strategy::create_strategy(&settings)
+                .context("Failed to initialize strategy")?))
+        }
+    };
     let strategy_name = strategy.read().await.name().to_string();
     info!("📈 Strategy: {}", strategy_name);
 

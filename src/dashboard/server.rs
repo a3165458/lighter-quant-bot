@@ -60,6 +60,87 @@ impl PersistentPnlData {
     }
 }
 
+const STRATEGY_CONFIG_FILE: &str = "data/strategy_config.json";
+const RISK_CONFIG_FILE: &str = "data/risk_config.json";
+
+/// Persistent strategy configuration that survives restarts
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct PersistentStrategyConfig {
+    pub strategy_name: String,
+    pub strategy_params: std::collections::HashMap<String, String>,
+}
+
+impl PersistentStrategyConfig {
+    pub fn save(ds: &DashboardState) {
+        let _ = std::fs::create_dir_all("data");
+        let config = PersistentStrategyConfig {
+            strategy_name: ds.strategy_name.clone(),
+            strategy_params: ds.strategy_params.clone(),
+        };
+        match serde_json::to_string_pretty(&config) {
+            Ok(json) => {
+                if let Err(e) = std::fs::write(STRATEGY_CONFIG_FILE, json) {
+                    warn!("⚠️ Failed to save strategy config: {}", e);
+                }
+            }
+            Err(e) => warn!("⚠️ Failed to serialize strategy config: {}", e),
+        }
+    }
+
+    pub fn load() -> Option<Self> {
+        let data = std::fs::read_to_string(STRATEGY_CONFIG_FILE).ok()?;
+        match serde_json::from_str(&data) {
+            Ok(config) => {
+                info!("📂 Loaded strategy config from {}", STRATEGY_CONFIG_FILE);
+                Some(config)
+            }
+            Err(e) => {
+                warn!("⚠️ Failed to parse strategy config file: {}", e);
+                None
+            }
+        }
+    }
+}
+
+/// Persistent risk configuration that survives restarts
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct PersistentRiskConfig {
+    pub risk_config: serde_json::Value,
+    pub leverage_limit: f64,
+}
+
+impl PersistentRiskConfig {
+    pub fn save(ds: &DashboardState) {
+        let _ = std::fs::create_dir_all("data");
+        let config = PersistentRiskConfig {
+            risk_config: ds.risk_config.clone(),
+            leverage_limit: ds.leverage_limit,
+        };
+        match serde_json::to_string_pretty(&config) {
+            Ok(json) => {
+                if let Err(e) = std::fs::write(RISK_CONFIG_FILE, json) {
+                    warn!("⚠️ Failed to save risk config: {}", e);
+                }
+            }
+            Err(e) => warn!("⚠️ Failed to serialize risk config: {}", e),
+        }
+    }
+
+    pub fn load() -> Option<Self> {
+        let data = std::fs::read_to_string(RISK_CONFIG_FILE).ok()?;
+        match serde_json::from_str(&data) {
+            Ok(config) => {
+                info!("📂 Loaded risk config from {}", RISK_CONFIG_FILE);
+                Some(config)
+            }
+            Err(e) => {
+                warn!("⚠️ Failed to parse risk config file: {}", e);
+                None
+            }
+        }
+    }
+}
+
 /// Shared dashboard state
 #[derive(Clone, Default)]
 pub struct DashboardState {
@@ -400,6 +481,7 @@ async fn strategy_update_handler(
         ds.strategy_config_changed = true;
         info!("Strategy params updated from dashboard: {:?}", ds.strategy_params);
     }
+    PersistentStrategyConfig::save(&ds);
     axum::Json(serde_json::json!({
         "status": "ok",
         "message": "Strategy config updated. Changes will apply shortly.",
@@ -597,6 +679,7 @@ async fn risk_config_update_handler(
         }
     }
     info!("🔧 Risk config updated from dashboard: {}", body);
+    PersistentRiskConfig::save(&ds);
     axum::Json(serde_json::json!({
         "status": "ok",
         "message": "Risk parameters updated",

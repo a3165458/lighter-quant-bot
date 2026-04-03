@@ -709,6 +709,13 @@ tr:hover td { background:var(--bg-card-hover); }
         <button class="fpill" data-asset="ETH">ETH</button>
       </div>
     </div>
+    <div class="card" style="margin-bottom:16px;">
+      <div class="card-header"><div class="card-title">Position P&L Summary</div></div>
+      <table>
+        <thead><tr><th>Asset</th><th>Closed Trades</th><th>Win / Loss</th><th>Win Rate</th><th class="td-r">Total P&L</th></tr></thead>
+        <tbody id="pos-summary-tbody"><tr><td colspan="5" class="empty-cell">No data</td></tr></tbody>
+      </table>
+    </div>
     <div class="card" style="padding:0; overflow:hidden;">
       <table><thead><tr><th data-i18n="time">Time</th><th data-i18n="asset">Asset</th><th>Action</th><th data-i18n="side">Side</th><th data-i18n="price">Price</th><th data-i18n="qty">Qty</th><th class="td-r" data-i18n="pnl">PNL</th></tr></thead>
       <tbody id="history-tbody"><tr><td colspan="7" class="empty-cell" data-i18n="noHistory">No trade history</td></tr></tbody></table>
