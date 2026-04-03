@@ -38,8 +38,8 @@ trading:
 
   # Position management
   position:
-    max_single_trade_percent: 8
-    max_total_position_percent: 40
+    max_single_trade_percent: 50
+    max_total_position_percent: 200
     risk_per_trade_percent: 1.5
 
 # Risk management

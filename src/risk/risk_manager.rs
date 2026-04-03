@@ -145,12 +145,13 @@ impl RiskManager {
             return Ok(false);
         }
 
-        // 检查3：单笔交易大小
+        // 检查3：单笔交易大小（杠杆感知：考虑最大杠杆倍数）
         let trade_value = signal.price * signal.quantity;
-        let max_trade_value = self.current_equity * self.max_single_trade_pct;
+        let leverage_factor = if self.max_leverage > 1.0 { self.max_leverage } else { 1.0 };
+        let max_trade_value = self.current_equity * self.max_single_trade_pct * leverage_factor;
         if trade_value > max_trade_value {
-            warn!("❌ 风控拒绝: 交易金额 ${:.2} 超过单笔限制 ${:.2}",
-                trade_value, max_trade_value);
+            warn!("❌ 风控拒绝: 交易金额 ${:.2} 超过单笔限制 ${:.2} (equity*{:.0}%*{:.0}x)",
+                trade_value, max_trade_value, self.max_single_trade_pct * 100.0, leverage_factor);
             return Ok(false);
         }
 
