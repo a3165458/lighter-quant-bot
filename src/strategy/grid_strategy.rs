@@ -13,11 +13,18 @@ use super::Strategy;
 /// Places limit buy orders below current price and limit sell orders above it.
 /// When a grid level is filled, the opposite direction is unlocked for profit.
 /// Each market maintains its own independent grid state.
-/// Includes an EMA trend filter to avoid accumulating in strong trends.
+///
+/// Features:
+/// - Multi-tier EMA trend filter (blocks all buys in very strong downtrend)
+/// - Max accumulated position limit (caps filled levels per side)
+/// - Trailing anchor that gradually drifts toward EMA
+/// - Faster anchor reset at 1.5x grid range
 pub struct GridStrategy {
     grid_count: usize,
     investment_per_grid: f64,
     price_deviation: f64,
+    /// Max filled grid levels per side before blocking new signals
+    max_filled_per_side: usize,
     states: Mutex<HashMap<String, MarketGridState>>,
 }
 
@@ -35,10 +42,14 @@ struct MarketGridState {
 
 impl GridStrategy {
     pub fn new(grid_count: usize, investment_per_grid: f64, price_deviation: f64) -> Self {
+        // Cap max filled per side: at most half of total grid levels, minimum 3
+        let half = grid_count / 2;
+        let max_filled = half.min(5).max(3);
         Self {
             grid_count,
             investment_per_grid,
             price_deviation,
+            max_filled_per_side: max_filled,
             states: Mutex::new(HashMap::new()),
         }
     }
@@ -101,10 +112,12 @@ impl Strategy for GridStrategy {
             let alpha = 2.0 / 21.0; // EMA-20
             state.ema = alpha * mid_price + (1.0 - alpha) * state.ema;
 
-            // Trend strength: positive = price above EMA (bullish), negative = below (bearish)
+            // Multi-tier trend detection
             let trend_pct = (mid_price - state.ema) / state.ema;
-            // Strong trend threshold: 0.3% deviation from EMA
-            let strong_trend = trend_pct.abs() > 0.003;
+            // Tier 1: Very strong trend (>0.6% from EMA) — block ALL counter-trend signals
+            let very_bearish = trend_pct < -0.006;
+            let very_bullish = trend_pct > 0.006;
+            // Tier 2: Strong trend (>0.3% from EMA) — only allow nearest level
             let bearish = trend_pct < -0.003;
             let bullish = trend_pct > 0.003;
 
@@ -115,15 +128,19 @@ impl Strategy for GridStrategy {
                 }
             }
 
+            // Trailing anchor: gradually blend toward EMA to keep grid centered on market
+            let anchor_drift_rate = 0.0005; // 0.05% per tick toward EMA
+            state.anchor_price = state.anchor_price * (1.0 - anchor_drift_rate)
+                + state.ema * anchor_drift_rate;
             let anchor = state.anchor_price;
 
-            // Only reset anchor if price drifted beyond 2x the full grid range
+            // Reset anchor if price drifted beyond 1.5x the full grid range (faster than 2x)
             let drift = (mid_price - anchor).abs() / anchor;
-            if drift > self.price_deviation * 2.0 {
+            if drift > self.price_deviation * 1.5 {
                 state.anchor_price = mid_price;
                 state.filled_buy = vec![false; half];
                 state.filled_sell = vec![false; half];
-                state.ema = mid_price; // reset EMA to avoid stale trend signal
+                state.ema = mid_price;
                 info!("Grid anchor reset: {:.2} -> {:.2} for {} (drift {:.2}%)",
                     anchor, mid_price, symbol, drift * 100.0);
                 continue;
@@ -131,15 +148,30 @@ impl Strategy for GridStrategy {
 
             let (buy_grids, sell_grids) = self.grid_prices(anchor);
 
+            // Count currently filled levels per side
+            let filled_buy_count = state.filled_buy.iter().filter(|&&f| f).count();
+            let filled_sell_count = state.filled_sell.iter().filter(|&&f| f).count();
+
+            // Only trust aggressive trend tiers after enough EMA history (avoids false signals on init)
+            let has_enough_history = state.price_history.len() >= 10;
+
             // Check buy grids: price dropped to grid level
-            // In strong bearish trend, only fill first buy level (reduce downside exposure)
             let mut signal_found = false;
             for (i, &grid_price) in buy_grids.iter().enumerate() {
                 if i >= state.filled_buy.len() || state.filled_buy[i] {
                     continue;
                 }
-                // In strong downtrend, skip deeper buy levels to limit drawdown
-                if bearish && i >= 2 {
+                // Multi-tier trend filter for buys:
+                // Very strong downtrend → block ALL buys (only after enough EMA data)
+                if has_enough_history && very_bearish {
+                    continue;
+                }
+                // Strong downtrend → only allow nearest buy level (L0)
+                if bearish && i >= 1 {
+                    continue;
+                }
+                // Max accumulated position limit per side
+                if filled_buy_count >= self.max_filled_per_side {
                     continue;
                 }
                 if mid_price <= grid_price {
@@ -165,13 +197,22 @@ impl Strategy for GridStrategy {
             }
 
             // Check sell grids if no buy signal for this market
-            // In strong bullish trend, skip deeper sell levels to let profits run
             if !signal_found {
                 for (i, &grid_price) in sell_grids.iter().enumerate() {
                     if i >= state.filled_sell.len() || state.filled_sell[i] {
                         continue;
                     }
-                    if bullish && i >= 2 {
+                    // Multi-tier trend filter for sells:
+                    // Very strong uptrend → block ALL sells (only after enough EMA data)
+                    if has_enough_history && very_bullish {
+                        continue;
+                    }
+                    // Strong uptrend → only allow nearest sell level (L0)
+                    if bullish && i >= 1 {
+                        continue;
+                    }
+                    // Max accumulated position limit per side
+                    if filled_sell_count >= self.max_filled_per_side {
                         continue;
                     }
                     if mid_price >= grid_price {
@@ -196,9 +237,12 @@ impl Strategy for GridStrategy {
                 }
             }
 
-            debug!("{} mid={:.2} anchor={:.2} ema={:.2} trend={:+.3}% {}",
+            debug!("{} mid={:.2} anchor={:.2} ema={:.2} trend={:+.3}% {} filled_buy={} filled_sell={}",
                 symbol, mid_price, anchor, state.ema, trend_pct * 100.0,
-                if strong_trend { if bearish { "↓BEAR" } else { "↑BULL" } } else { "→RANGE" });
+                if very_bearish { "⬇VERY_BEAR" } else if bearish { "↓BEAR" }
+                else if very_bullish { "⬆VERY_BULL" } else if bullish { "↑BULL" }
+                else { "→RANGE" },
+                filled_buy_count, filled_sell_count);
         }
 
         if all_signals.is_empty() {
@@ -267,13 +311,40 @@ mod tests {
     #[tokio::test]
     async fn test_grid_cooldown_uses_market_time() {
         let strategy = GridStrategy::new(4, 100.0, 0.02);
+        // half=2, buy grids: [99.0, 98.0], sell grids: [101.0, 102.0]
 
+        // Initial eval: sets anchor at 100.0 (no grid level hit)
         assert!(strategy.evaluate(&snapshot("BTC", 1_700_000_000, 100.0)).await.unwrap().is_none());
 
+        // Price drops to 98.5 → hits buy L0 at 99.0
         let first = strategy.evaluate(&snapshot("BTC", 1_700_000_900, 98.5)).await.unwrap();
+        assert!(first.is_some(), "Should trigger buy signal");
         assert_eq!(first.unwrap().len(), 1);
 
-        let second = strategy.evaluate(&snapshot("BTC", 1_700_001_800, 97.5)).await.unwrap();
-        assert_eq!(second.unwrap().len(), 1);
+        // Only 5 seconds later → blocked by 15s cooldown
+        let blocked = strategy.evaluate(&snapshot("BTC", 1_700_000_905, 98.5)).await.unwrap();
+        assert!(blocked.is_none(), "Should be blocked by cooldown");
+
+        // After cooldown (900s later) at same price → L0 already filled, L1 blocked by trend filter
+        let after_cooldown = strategy.evaluate(&snapshot("BTC", 1_700_001_800, 98.5)).await.unwrap();
+        assert!(after_cooldown.is_none(), "L1 should be blocked by bearish trend filter");
+    }
+
+    #[tokio::test]
+    async fn test_grid_trend_filter_blocks_deep_buys() {
+        let strategy = GridStrategy::new(6, 100.0, 0.03);
+        // half=3, step = 100 * 0.03 / 3 = 1.0
+        // buy grids: ~[99.0, 98.0, 97.0]
+
+        // Set anchor
+        strategy.evaluate(&snapshot("BTC", 1_700_000_000, 100.0)).await.unwrap();
+
+        // Price drops to clearly hit buy L0 (bearish but L0 allowed)
+        let sig = strategy.evaluate(&snapshot("BTC", 1_700_000_100, 98.5)).await.unwrap();
+        assert!(sig.is_some(), "Buy L0 should be allowed even in bearish trend");
+
+        // Price drops further → L1 blocked by bearish filter (i >= 1)
+        let sig2 = strategy.evaluate(&snapshot("BTC", 1_700_000_200, 97.5)).await.unwrap();
+        assert!(sig2.is_none(), "Buy L1 should be blocked by bearish trend filter");
     }
 }
