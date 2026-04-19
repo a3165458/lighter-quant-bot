@@ -6,9 +6,9 @@
 
 - **策略引擎**: Grid（网格）策略 + EMA 趋势过滤，可扩展 DCA / Trend Following
 - **实时交易**: REST API + WebSocket 双通道，自动重连 + Keepalive
-- **Web Dashboard**: 实时监控面板（亮色/暗色主题、中英双语）
+- **Web Dashboard**: 实时监控面板（亮色/暗色主题、中英双语、长周期净值查看）
 - **交易控制**: 通过 Dashboard 实时切换交易对、暂停/恢复、一键撤单
-- **AI Strategy Lab**: 内置回测引擎 + AI 参数优化（支持 OpenAI / ZhiPu / 自定义 API）
+- **AI Strategy Lab**: 内置回测引擎 + AI 参数优化（支持 OpenAI / ZhiPu / 自定义 API / OpenCode GLM5）
 - **风控系统**: 止损、最大回撤、日亏损限制、杠杆限制
 - **PnL 持久化**: 净值曲线、交易历史、每日盈亏自动保存和恢复
 - **高性能**: Tokio 异步运行时，低延迟订单执行
@@ -104,12 +104,40 @@ risk:
 
 | 功能 | 说明 |
 |------|------|
-| 📈 Dashboard | 净值曲线、盈亏统计、持仓、订单簿 |
+| 📈 Dashboard | 净值曲线、盈亏统计、持仓、风险监控 |
 | 📋 Strategies | 策略参数配置、交易控制（开关市场、暂停） |
 | 💼 Portfolio | 持仓和挂单详情 |
-| 📜 History | 完整交易历史 + CSV 导出 |
-| ⚙️ Settings | 系统状态、风控限制、主题切换 |
-| 🤖 AI Lab | 回测引擎 + AI 参数优化 |
+| 📜 History | 完整交易历史 + CSV 导出 + 平均持仓时间 |
+| ⚙️ Settings | 系统状态、风控限制、主题切换（不暴露账户编号） |
+| 🤖 AI Lab | 回测引擎 + AI 参数优化 + OpenCode GLM5 联合回测 |
+
+## 📝 更新历史 / 回测记录
+
+### 2026-04-19
+
+- **Dashboard 升级**
+  - Equity Curve 新增 `ALL / 30D / 7D / 24H` 视图切换，支持查看早期净值与交易阶段
+  - 面板移除订单簿模块，降低前端与 Dashboard WebSocket 资源占用
+  - 历史页恢复 `Avg Duration` 平均持仓时间，并移除胜率展示
+  - Settings 页面移除 `Account Index` 展示，避免公开仓库/公开面板泄露账户标识
+- **AI Lab**
+  - 新增 OpenCode GLM5 本地优化入口
+  - 已验证本机 `opencode --pure -m opencode-go/glm-5` 可返回策略参数并联动回测
+- **OpenCode GLM5 回测记录**
+  - 建议参数：`grid_count=10,investment=40,deviation=0.01`
+  - 结果：`Return +6.83% | Sharpe 2.09 | MaxDD 7.91% | Trades 58 | Profit Factor 2.45`
+
+### 2026-04-04
+
+- **Grid 策略优化**
+  - 引入多层 EMA 趋势过滤、trailing anchor、1.5x anchor reset、每侧最大累积层数限制
+  - 持久化参数修复后，Dashboard 调整的 `investment_per_grid` / `price_deviation` 可正确生效
+- **风险与配置**
+  - 风控改为杠杆感知的单笔限额
+  - Strategy / Risk 配置支持重启恢复
+- **回测记录**
+  - 参数：`grid_count=6,investment=60,deviation=0.016`
+  - 结果：`Return +4.81% | Sharpe 1.79 | MaxDD 7.51% | Trades 18 | Profit Factor 2.78`
 
 ## 🏗️ 项目结构
 

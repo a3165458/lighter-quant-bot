@@ -12,6 +12,8 @@ use futures::{SinkExt, StreamExt};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use tokio::process::Command;
+use tokio::time::{timeout, Duration};
 use tower_http::cors::CorsLayer;
 use tracing::{info, warn};
 use serde::{Serialize, Deserialize};
@@ -153,7 +155,6 @@ pub struct DashboardState {
     pub open_orders_list: Vec<serde_json::Value>,
     pub positions: Vec<serde_json::Value>,
     pub trade_history: Vec<serde_json::Value>,
-    pub order_books: std::collections::HashMap<u32, serde_json::Value>,
     pub risk_status: Option<serde_json::Value>,
     // PnL tracking
     pub daily_realized_pnl: f64,
@@ -250,6 +251,7 @@ pub async fn start_with_state(host: &str, port: u16, state: SharedDashboardState
         .route("/api/strategy", get(strategy_get_handler))
         .route("/api/strategy", post(strategy_update_handler))
         .route("/api/backtest", post(backtest_handler))
+        .route("/api/backtest/opencode-optimize", post(opencode_optimize_handler))
         .route("/api/trading/markets", get(markets_get_handler))
         .route("/api/trading/markets", post(markets_update_handler))
         .route("/api/trading/pause", post(trading_pause_handler))
@@ -354,10 +356,6 @@ async fn handle_ws_connection(mut socket: WebSocket, state: SharedDashboardState
                 "type": "open_orders",
                 "data": ds.open_orders_list
             });
-            // Collect orderbook snapshots for all markets
-            let orderbook_msgs: Vec<_> = ds.order_books.values().map(|ob| {
-                serde_json::json!({ "type": "orderbook", "data": ob })
-            }).collect();
             drop(ds);
 
             if ws_sender.send(Message::Text(status_msg.to_string())).await.is_err() {
@@ -367,9 +365,6 @@ async fn handle_ws_connection(mut socket: WebSocket, state: SharedDashboardState
             let _ = ws_sender.send(Message::Text(risk_msg.to_string())).await;
             let _ = ws_sender.send(Message::Text(trades_msg.to_string())).await;
             let _ = ws_sender.send(Message::Text(orders_msg.to_string())).await;
-            for ob_msg in orderbook_msgs {
-                let _ = ws_sender.send(Message::Text(ob_msg.to_string())).await;
-            }
         }
     });
 
@@ -398,7 +393,6 @@ async fn handle_ws_connection(mut socket: WebSocket, state: SharedDashboardState
 
 async fn status_handler(State(state): State<SharedDashboardState>) -> impl IntoResponse {
     let ds = state.read().await;
-    let account_idx = std::env::var("LIGHTER_ACCOUNT_INDEX").unwrap_or_default();
     axum::Json(serde_json::json!({
         "status": "running",
         "version": env!("CARGO_PKG_VERSION"),
@@ -408,7 +402,6 @@ async fn status_handler(State(state): State<SharedDashboardState>) -> impl IntoR
         "total_pnl": ds.unrealized_pnl,
         "daily_realized_pnl": ds.daily_realized_pnl,
         "total_realized_pnl": ds.total_realized_pnl,
-        "account_index": account_idx,
     }))
 }
 
@@ -445,7 +438,7 @@ async fn pnl_handler(State(state): State<SharedDashboardState>) -> impl IntoResp
             .map(|(ts, pnl)| serde_json::json!({"t": ts, "v": pnl}))
             .collect::<Vec<_>>(),
         "daily_pnl_map": ds.daily_pnl_map,
-        "trades": ds.trade_history.iter().rev().take(50).collect::<Vec<_>>(),
+        "trades": ds.trade_history.iter().rev().take(200).collect::<Vec<_>>(),
     }))
 }
 
@@ -500,67 +493,186 @@ async fn backtest_handler(
     let start = body.get("start").and_then(|s| s.as_str()).unwrap_or("");
     let end = body.get("end").and_then(|s| s.as_str()).unwrap_or("");
 
-    // Validate inputs
+    match run_backtest_result(strategy, params, data_file, capital, start, end).await {
+        Ok(result) => axum::Json(result),
+        Err(e) => axum::Json(serde_json::json!({"status": "error", "message": e.to_string()})),
+    }
+}
+
+async fn run_backtest_result(
+    strategy: &str,
+    params: &str,
+    data_file: &str,
+    capital: f64,
+    start: &str,
+    end: &str,
+) -> Result<serde_json::Value> {
     if data_file.is_empty() || start.is_empty() || end.is_empty() {
-        return axum::Json(serde_json::json!({
-            "status": "error",
-            "message": "Missing required fields: data_file, start, end"
-        }));
+        anyhow::bail!("Missing required fields: data_file, start, end");
     }
 
-    // Run backtest in-process
     let data_path = if data_file.starts_with('/') || data_file.starts_with("backtests/") {
         data_file.to_string()
     } else {
         format!("backtests/data/{}", data_file)
     };
 
-    match crate::data::loader::load_csv_data_in_range(&data_path, start, end) {
-        Ok(historical_data) => {
-            let candle_count = historical_data.len();
-            match crate::strategy::create_strategy_with_params(strategy, if params.is_empty() { None } else { Some(params) }) {
-                Ok(bt_strategy) => {
-                    let mut engine = crate::backtest::engine::BacktestEngine::new(capital, historical_data);
-                    match engine.run(bt_strategy).await {
-                        Ok(results) => {
-                            axum::Json(serde_json::json!({
-                                "status": "ok",
-                                "candles": candle_count,
-                                "total_return_pct": results.total_return * 100.0,
-                                "sharpe_ratio": results.sharpe_ratio,
-                                "max_drawdown_pct": results.max_drawdown * 100.0,
-                                "total_trades": results.total_trades,
-                                "winning_trades": results.winning_trades,
-                                "losing_trades": results.losing_trades,
-                                "win_rate_pct": results.win_rate * 100.0,
-                                "profit_factor": results.profit_factor,
-                                "avg_profit": results.avg_profit,
-                                "avg_loss": results.avg_loss,
-                                "initial_capital": results.initial_capital,
-                                "final_capital": results.final_capital,
-                                "equity_curve": results.equity_curve.iter()
-                                    .map(|(ts, eq)| serde_json::json!({"t": ts.timestamp(), "v": eq}))
-                                    .collect::<Vec<_>>(),
-                                "trades": results.trades.iter().take(100)
-                                    .map(|t| serde_json::json!({
-                                        "timestamp": t.timestamp.to_rfc3339(),
-                                        "symbol": t.symbol,
-                                        "side": format!("{:?}", t.side),
-                                        "price": t.price,
-                                        "quantity": t.quantity,
-                                        "pnl": t.pnl,
-                                        "commission": t.commission,
-                                    }))
-                                    .collect::<Vec<_>>(),
-                            }))
-                        }
-                        Err(e) => axum::Json(serde_json::json!({"status": "error", "message": format!("Backtest failed: {}", e)})),
-                    }
-                }
-                Err(e) => axum::Json(serde_json::json!({"status": "error", "message": format!("Invalid strategy: {}", e)})),
-            }
+    let historical_data = crate::data::loader::load_csv_data_in_range(&data_path, start, end)
+        .map_err(|e| anyhow::anyhow!("Data load failed: {}", e))?;
+    let candle_count = historical_data.len();
+    let bt_strategy = crate::strategy::create_strategy_with_params(
+        strategy,
+        if params.is_empty() { None } else { Some(params) },
+    ).map_err(|e| anyhow::anyhow!("Invalid strategy: {}", e))?;
+
+    let mut engine = crate::backtest::engine::BacktestEngine::new(capital, historical_data);
+    let results = engine.run(bt_strategy).await
+        .map_err(|e| anyhow::anyhow!("Backtest failed: {}", e))?;
+
+    Ok(serde_json::json!({
+        "status": "ok",
+        "strategy": strategy,
+        "data_file": data_file,
+        "candles": candle_count,
+        "total_return_pct": results.total_return * 100.0,
+        "sharpe_ratio": results.sharpe_ratio,
+        "max_drawdown_pct": results.max_drawdown * 100.0,
+        "total_trades": results.total_trades,
+        "winning_trades": results.winning_trades,
+        "losing_trades": results.losing_trades,
+        "win_rate_pct": results.win_rate * 100.0,
+        "profit_factor": results.profit_factor,
+        "avg_profit": results.avg_profit,
+        "avg_loss": results.avg_loss,
+        "initial_capital": results.initial_capital,
+        "final_capital": results.final_capital,
+        "equity_curve": results.equity_curve.iter()
+            .map(|(ts, eq)| serde_json::json!({"t": ts.timestamp(), "v": eq}))
+            .collect::<Vec<_>>(),
+        "trades": results.trades.iter().take(100)
+            .map(|t| serde_json::json!({
+                "timestamp": t.timestamp.to_rfc3339(),
+                "symbol": t.symbol,
+                "side": format!("{:?}", t.side),
+                "price": t.price,
+                "quantity": t.quantity,
+                "pnl": t.pnl,
+                "commission": t.commission,
+            }))
+            .collect::<Vec<_>>(),
+    }))
+}
+
+fn build_opencode_prompt(base: &serde_json::Value, params: &str, goal: &str) -> String {
+    let goal_text = match goal {
+        "return" => "Maximize total return",
+        "drawdown" => "Minimize max drawdown",
+        "balanced" => "Balance return and risk",
+        _ => "Maximize Sharpe ratio",
+    };
+    format!(
+        "Optimize this crypto grid strategy.\n\
+Current params: {params}\n\
+Return={ret:.2}% Sharpe={sharpe:.2} MaxDD={dd:.2}% ProfitFactor={pf:.2} Trades={trades}\n\
+Goal: {goal_text}\n\
+Allowed: grid_count 4-20, investment 3-80, deviation 0.005-0.03\n\
+Reply with EXACTLY ONE LINE ONLY:\n\
+PARAMS: grid_count=X,investment=Y,deviation=Z",
+        ret = base["total_return_pct"].as_f64().unwrap_or(0.0),
+        sharpe = base["sharpe_ratio"].as_f64().unwrap_or(0.0),
+        dd = base["max_drawdown_pct"].as_f64().unwrap_or(0.0),
+        pf = base["profit_factor"].as_f64().unwrap_or(0.0),
+        trades = base["total_trades"].as_u64().unwrap_or(0),
+    )
+}
+
+fn parse_suggested_params(text: &str) -> Option<String> {
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("PARAMS:") {
+            return Some(rest.trim().to_string());
         }
-        Err(e) => axum::Json(serde_json::json!({"status": "error", "message": format!("Data load failed: {}", e)})),
+    }
+    let compact = text.replace(' ', "");
+    let gc = compact.split("grid_count=").nth(1)?.split([',', '\n']).next()?;
+    let inv = compact.split("investment=").nth(1)?.split([',', '\n']).next()?;
+    let dev = compact.split("deviation=").nth(1)?.split([',', '\n']).next()?;
+    Some(format!("grid_count={gc},investment={inv},deviation={dev}"))
+}
+
+async fn opencode_optimize_handler(
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let strategy = body.get("strategy").and_then(|s| s.as_str()).unwrap_or("grid");
+    let params = body.get("params").and_then(|s| s.as_str()).unwrap_or("grid_count=10,investment=8,deviation=0.012");
+    let data_file = body.get("data_file").and_then(|s| s.as_str()).unwrap_or("");
+    let capital = body.get("capital").and_then(|c| c.as_f64()).unwrap_or(125.0);
+    let start = body.get("start").and_then(|s| s.as_str()).unwrap_or("");
+    let end = body.get("end").and_then(|s| s.as_str()).unwrap_or("");
+    let goal = body.get("goal").and_then(|s| s.as_str()).unwrap_or("sharpe");
+    let model = body.get("opencode_model").and_then(|s| s.as_str()).unwrap_or("opencode-go/glm-5");
+
+    let base = match run_backtest_result(strategy, params, data_file, capital, start, end).await {
+        Ok(result) => result,
+        Err(e) => return axum::Json(serde_json::json!({"status": "error", "message": e.to_string()})),
+    };
+
+    let prompt = build_opencode_prompt(&base, params, goal);
+    let output = match timeout(
+        Duration::from_secs(240),
+        Command::new("opencode")
+            .arg("run")
+            .arg("--pure")
+            .arg("-m").arg(model)
+            .arg("--dir").arg(".")
+            .arg(prompt)
+            .output()
+    ).await {
+        Ok(Ok(output)) => output,
+        Ok(Err(e)) => {
+            return axum::Json(serde_json::json!({
+                "status": "error",
+                "message": format!("OpenCode invocation failed: {}", e)
+            }))
+        }
+        Err(_) => {
+            return axum::Json(serde_json::json!({
+                "status": "error",
+                "message": "OpenCode request timed out after 240 seconds"
+            }))
+        }
+    };
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let combined = if stdout.trim().is_empty() { stderr.clone() } else { format!("{stdout}\n{stderr}") };
+    let suggested = match parse_suggested_params(&combined) {
+        Some(value) => value,
+        None => {
+            let preview = combined.chars().take(500).collect::<String>();
+            return axum::Json(serde_json::json!({
+                "status": "error",
+                "message": format!("OpenCode did not return parsable parameters. Output: {}", preview)
+            }))
+        }
+    };
+
+    match run_backtest_result(strategy, &suggested, data_file, capital, start, end).await {
+        Ok(optimized) => axum::Json(serde_json::json!({
+            "status": "ok",
+            "model": model,
+            "base": base,
+            "optimized": optimized,
+            "optimized_params": suggested,
+            "suggestion": combined,
+        })),
+        Err(e) => axum::Json(serde_json::json!({
+            "status": "error",
+            "message": format!("Optimized backtest failed: {}", e),
+            "base": base,
+            "optimized_params": suggested,
+            "suggestion": combined,
+        })),
     }
 }
 

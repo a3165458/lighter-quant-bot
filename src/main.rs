@@ -231,7 +231,6 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
             })
         }).collect(),
         trade_history: Vec::new(),
-        order_books: std::collections::HashMap::new(),
         risk_status: None,
         daily_realized_pnl: 0.0,
         total_realized_pnl: 0.0,
@@ -395,20 +394,13 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
     let ws_client = lighter::websocket::LighterWebSocket::new(&ws_url);
     ws_client.connect().await?;
 
-    // Subscribe to market data (trading markets + display-only markets)
-    let display_markets: Vec<u32> = vec![0, 1]; // ETH=0, BTC=1 for dashboard orderbook
+    // Subscribe to market data for actively traded markets only
     let mut subscribed = std::collections::HashSet::new();
     for &mid in &market_ids {
         let symbol = market_infos.get(&mid).map(|m| m.symbol.as_str()).unwrap_or("?");
         ws_client.subscribe_market_data(&mid.to_string()).await?;
         subscribed.insert(mid);
         info!("📡 Subscribed to {} (market {})", symbol, mid);
-    }
-    for &mid in &display_markets {
-        if !subscribed.contains(&mid) {
-            ws_client.subscribe_market_data(&mid.to_string()).await?;
-            info!("📡 Subscribed to market {} (display only)", mid);
-        }
     }
 
     // Start the main trading loop
@@ -436,6 +428,7 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
         let mut prev_unrealized: f64 = 0.0;
         // Position snapshot for logging close events (side, size, entry_price)
         let mut prev_positions: std::collections::HashMap<String, (lighter::types::Side, f64, f64)> = std::collections::HashMap::new();
+        let mut position_opened_at: std::collections::HashMap<String, chrono::DateTime<Utc>> = std::collections::HashMap::new();
         // Track daily PnL reset
         let mut last_daily_reset_day: u32 = (Utc::now().timestamp() / 86400) as u32;
         let mut first_cycle = true;
@@ -593,20 +586,18 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
                     // Step 2: Only then compute PnL via equity method: realized = Δequity - Δunrealized
                     let mut realized_pnl_this_cycle = 0.0_f64;
                     let mut close_events: Vec<serde_json::Value> = Vec::new();
+                    let close_timestamp = Utc::now();
+                    let mut curr_pos_map: std::collections::HashMap<String, (lighter::types::Side, f64, f64)> = std::collections::HashMap::new();
+                    for p in &acct.positions {
+                        if p.size.abs() > 1e-10 {
+                            let decimals = if p.symbol == "ETH" { 4 } else { 5 };
+                            let factor = 10_f64.powi(decimals);
+                            let rounded_size = (p.size * factor).round() / factor;
+                            curr_pos_map.insert(p.symbol.clone(), (p.side, rounded_size, p.entry_price));
+                        }
+                    }
 
                     if !first_cycle && prev_equity > 0.0 {
-                        // Build current position map with rounded sizes
-                        let mut curr_pos_map: std::collections::HashMap<String, (lighter::types::Side, f64, f64)> = std::collections::HashMap::new();
-                        for p in &acct.positions {
-                            if p.size.abs() > 1e-10 {
-                                // Round to market precision to avoid float jitter
-                                let decimals = if p.symbol == "ETH" { 4 } else { 5 };
-                                let factor = 10_f64.powi(decimals);
-                                let rounded_size = (p.size * factor).round() / factor;
-                                curr_pos_map.insert(p.symbol.clone(), (p.side, rounded_size, p.entry_price));
-                            }
-                        }
-
                         // Check for meaningful position changes (size decreased or position closed)
                         let mut position_reductions: Vec<(String, lighter::types::Side, f64, f64, &str)> = Vec::new();
                         for (symbol, (prev_side, prev_size, prev_entry)) in &prev_positions {
@@ -656,8 +647,12 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
                                     close_type, symbol, prev_side, closed_size, prev_entry,
                                     if pnl_share >= 0.0 { "+" } else { "" }, pnl_share);
 
+                                let duration_secs = position_opened_at.get(symbol)
+                                    .map(|opened| close_timestamp.signed_duration_since(*opened).num_seconds().max(0))
+                                    .unwrap_or(0);
+
                                 close_events.push(serde_json::json!({
-                                    "timestamp": Utc::now().to_rfc3339(),
+                                    "timestamp": close_timestamp.to_rfc3339(),
                                     "symbol": symbol,
                                     "market_id": market_id,
                                     "side": format!("{:?}", match prev_side {
@@ -668,6 +663,7 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
                                     "quantity": closed_size,
                                     "pnl": (pnl_share * 10000.0).round() / 10000.0,
                                     "action": close_type, // "Full Close" or "Partial Close"
+                                    "duration_secs": duration_secs,
                                 }));
                             }
                         }
@@ -675,6 +671,20 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
                     first_cycle = false;
                     prev_equity = curr_equity;
                     prev_unrealized = curr_unrealized;
+
+                    let mut next_opened_at = position_opened_at.clone();
+                    next_opened_at.retain(|symbol, _| curr_pos_map.contains_key(symbol));
+                    for (symbol, (curr_side, curr_size, _)) in &curr_pos_map {
+                        let min_change = if symbol == "ETH" { 0.0049 } else { 0.00019 };
+                        let should_reset = match prev_positions.get(symbol) {
+                            Some((prev_side, prev_size, _)) => *prev_side != *curr_side || *prev_size < min_change,
+                            None => *curr_size >= min_change,
+                        };
+                        if should_reset || !next_opened_at.contains_key(symbol) {
+                            next_opened_at.insert(symbol.clone(), close_timestamp);
+                        }
+                    }
+                    position_opened_at = next_opened_at;
 
                     // Update position snapshot (rounded) for next cycle
                     prev_positions.clear();
@@ -708,6 +718,7 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
                                 "entry_price": p.entry_price,
                                 "mark_price": mark,
                                 "unrealized_pnl": p.unrealized_pnl,
+                                "opened_at": position_opened_at.get(&p.symbol).map(|ts| ts.to_rfc3339()),
                             })
                         }).collect();
 
@@ -733,17 +744,20 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
                             ds.total_realized_pnl += realized_pnl_this_cycle;
                             info!("📊 Realized PnL update: cycle={:+.4}, daily={:+.4}, total={:+.4}",
                                 realized_pnl_this_cycle, ds.daily_realized_pnl, ds.total_realized_pnl);
-                            // Persist to disk on every PnL change
-                            ds.save_pnl();
                         }
 
                         // Record close events in trade history
+                        let has_close_events = !close_events.is_empty();
                         for evt in close_events {
                             ds.trade_history.push(evt);
                         }
                         let len = ds.trade_history.len();
                         if len > 200 {
                             ds.trade_history.drain(..len - 200);
+                        }
+
+                        if realized_pnl_this_cycle.abs() > 0.0001 || has_close_events {
+                            ds.save_pnl();
                         }
 
                         // Track initial equity on first update
@@ -914,20 +928,6 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
             let mut store = data_store_clone.write().await;
             match &msg {
                 lighter::types::WsMessage::OrderBookUpdate(ob) => {
-                    // Update dashboard orderbook
-                    let mut ds = dash_state.write().await;
-                    ds.order_books.insert(ob.market_id, serde_json::json!({
-                        "market_id": ob.market_id,
-                        "bids": ob.bids.iter().take(10).map(|l| serde_json::json!({
-                            "price": l.price,
-                            "size": l.quantity,
-                        })).collect::<Vec<_>>(),
-                        "asks": ob.asks.iter().take(10).map(|l| serde_json::json!({
-                            "price": l.price,
-                            "size": l.quantity,
-                        })).collect::<Vec<_>>(),
-                    }));
-                    drop(ds);
                     store.update_order_book(ob.clone());
                 }
                 lighter::types::WsMessage::TradeUpdate(trade) => {

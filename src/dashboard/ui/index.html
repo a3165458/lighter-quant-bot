@@ -219,8 +219,18 @@ main {
 /* ── Charts Grid ── */
 .charts-grid { display:grid; grid-template-columns:2fr 1fr; gap:20px; margin-bottom:24px; }
 
-/* ── Bottom Grid (positions + orderbook) ── */
-.bottom-grid { display:grid; grid-template-columns:1fr 380px; gap:20px; margin-bottom:24px; }
+.chart-toolbar { display:flex; align-items:center; gap:8px; }
+.range-group { display:flex; gap:6px; flex-wrap:wrap; }
+.range-btn {
+  padding:6px 10px; border-radius:10px; border:1px solid var(--border);
+  background:transparent; color:var(--text-sub); font-size:12px;
+  font-weight:700; font-family:inherit; cursor:pointer; transition:all 0.15s;
+}
+.range-btn:hover { border-color:var(--text-sub); color:var(--text-main); }
+.range-btn.active { background:var(--primary-dim); border-color:var(--primary-dim); color:var(--primary); }
+
+/* ── Bottom Grid (positions + risk) ── */
+.bottom-grid { display:grid; grid-template-columns:1fr 360px; gap:20px; margin-bottom:24px; }
 
 /* ── Tables ── */
 table { width:100%; border-collapse:collapse; }
@@ -250,32 +260,6 @@ tr:hover td { background:var(--bg-card-hover); }
 .c-up { color:var(--success) !important; }
 .c-down { color:var(--danger) !important; }
 .pnl-arrow { font-size:0.7em; margin-right:2px; vertical-align:middle; }
-
-/* ── Orderbook ── */
-.ob-section { padding:0; }
-.ob-tabs { display:flex; gap:4px; }
-.ob-tab {
-  padding:5px 14px; border-radius:8px; border:none; cursor:pointer;
-  font-size:12px; font-weight:600; font-family:inherit;
-  background:transparent; color:var(--text-sub); transition:all 0.15s;
-}
-.ob-tab:hover { color:var(--text-main); }
-.ob-tab.active { background:var(--primary-dim); color:var(--primary); }
-.ob-head { display:flex; justify-content:space-between; padding:8px 16px; font-size:10px; color:var(--text-sub); text-transform:uppercase; font-weight:600; letter-spacing:0.4px; }
-.ob-row {
-  display:flex; justify-content:space-between; padding:3px 16px;
-  font-size:12px; font-variant-numeric:tabular-nums; position:relative;
-  line-height:1.8;
-}
-.ob-row::before { content:''; position:absolute; top:0; bottom:0; right:0; width:var(--depth,0%); transition:width 0.3s; }
-.ob-row.bid::before { background:rgba(5,205,153,0.08); }
-.ob-row.ask::before { background:rgba(238,93,80,0.08); }
-.ob-price { position:relative; z-index:1; font-weight:600; }
-.ob-size { position:relative; z-index:1; color:var(--text-sub); }
-.ob-mid {
-  padding:8px 16px; text-align:center; font-size:14px; font-weight:700;
-  background:var(--bg-input); font-variant-numeric:tabular-nums;
-}
 
 /* ── Risk Monitor ── */
 .risk-section { padding:16px; border-top:1px solid var(--border); }
@@ -500,7 +484,18 @@ tr:hover td { background:var(--bg-card-hover); }
 
     <div class="charts-grid">
       <div class="card">
-        <div class="card-header"><div class="card-title" data-i18n="equityCurve">Equity Curve</div><span style="font-size:12px;color:var(--text-sub);font-family:monospace;" id="chart-info">—</span></div>
+        <div class="card-header">
+          <div class="card-title" data-i18n="equityCurve">Equity Curve</div>
+          <div class="chart-toolbar">
+            <div class="range-group" id="eq-range-group">
+              <button class="range-btn active" data-range="all">ALL</button>
+              <button class="range-btn" data-range="30d">30D</button>
+              <button class="range-btn" data-range="7d">7D</button>
+              <button class="range-btn" data-range="24h">24H</button>
+            </div>
+            <span style="font-size:12px;color:var(--text-sub);font-family:monospace;" id="chart-info">—</span>
+          </div>
+        </div>
         <div style="height:300px;"><canvas id="equityChart"></canvas></div>
       </div>
       <div class="card">
@@ -538,20 +533,13 @@ tr:hover td { background:var(--bg-card-hover); }
         </div>
       </div>
 
-      <!-- Orderbook + Risk + PnL History -->
+      <!-- Risk + PnL History -->
       <div class="card" style="padding:0; overflow:hidden;">
         <div style="padding:12px 16px; display:flex; align-items:center; justify-content:space-between; border-bottom:1px solid var(--border);">
-          <span style="font-size:14px; font-weight:700;" data-i18n="orderBook">Order Book</span>
-          <div class="ob-tabs" id="ob-tabs">
-            <button class="ob-tab active" data-m="1">BTC</button>
-            <button class="ob-tab" data-m="0">ETH</button>
-          </div>
+          <span style="font-size:14px; font-weight:700;" data-i18n="riskMonitor">Risk Monitor</span>
+          <span style="font-size:12px;color:var(--text-sub);font-weight:600;">Dashboard Lite</span>
         </div>
-        <div class="ob-head"><span>Price</span><span>Size</span></div>
-        <div id="ob-asks" style="height:200px; overflow-y:auto;"></div>
-        <div class="ob-mid" id="ob-spread">—</div>
-        <div id="ob-bids" style="height:200px; overflow-y:auto;"></div>
-        <div class="risk-section">
+        <div class="risk-section" style="border-top:none;">
           <div class="risk-title" data-i18n="riskMonitor">Risk Monitor</div>
           <div class="risk-item">
             <div class="risk-labels"><span class="risk-k" data-i18n="maxDrawdown">Max Drawdown</span><span class="risk-v" id="r-dd">0.0%</span></div>
@@ -631,7 +619,6 @@ tr:hover td { background:var(--bg-card-hover); }
       </div>
       <div class="card">
         <div class="card-header"><div class="card-title" data-i18n="performance">Performance</div><span class="badge badge-info">Live</span></div>
-        <div class="info-row"><span class="info-k" data-i18n="winRate">Win Rate</span><span class="info-v c-up" id="sp-winrate">—</span></div>
         <div class="info-row"><span class="info-k" data-i18n="totalTrades">Total Trades</span><span class="info-v" id="sp-trades">0</span></div>
         <div class="info-row"><span class="info-k">Total P&amp;L</span><span class="info-v" id="sp-pnl">$0.00</span></div>
         <div class="info-row"><span class="info-k" data-i18n="activeMarkets">Active Markets</span><span class="info-v" id="sp-markets">—</span></div>
@@ -697,7 +684,7 @@ tr:hover td { background:var(--bg-card-hover); }
     </div>
     <div class="stats-grid" style="margin-bottom:20px;">
       <div class="card stat-card"><div class="stat-icon" style="color:var(--success);"><i data-lucide="trending-up"></i></div><div class="stat-info"><div class="label" data-i18n="totalPnl">Total PNL</div><div class="value" id="hc-pnl">$0.00</div></div></div>
-      <div class="card stat-card"><div class="stat-icon" style="color:var(--primary);"><i data-lucide="target"></i></div><div class="stat-info"><div class="label" data-i18n="winRate">Win Rate</div><div class="value" id="hc-winrate">0%</div></div></div>
+      <div class="card stat-card"><div class="stat-icon" style="color:var(--primary);"><i data-lucide="circle-check-big"></i></div><div class="stat-info"><div class="label">Closed Trades</div><div class="value" id="hc-closed-trades">0</div></div></div>
       <div class="card stat-card"><div class="stat-icon" style="color:var(--warning);"><i data-lucide="activity"></i></div><div class="stat-info"><div class="label" data-i18n="volume">Volume</div><div class="value" id="hc-volume">$0</div></div></div>
       <div class="card stat-card"><div class="stat-icon"><i data-lucide="timer"></i></div><div class="stat-info"><div class="label" data-i18n="avgDuration">Avg Duration</div><div class="value" id="hc-duration">—</div></div></div>
     </div>
@@ -712,8 +699,8 @@ tr:hover td { background:var(--bg-card-hover); }
     <div class="card" style="margin-bottom:16px;">
       <div class="card-header"><div class="card-title">Position P&L Summary</div></div>
       <table>
-        <thead><tr><th>Asset</th><th>Closed Trades</th><th>Win / Loss</th><th>Win Rate</th><th class="td-r">Total P&L</th></tr></thead>
-        <tbody id="pos-summary-tbody"><tr><td colspan="5" class="empty-cell">No data</td></tr></tbody>
+        <thead><tr><th>Asset</th><th>Closed Trades</th><th>Avg Hold</th><th class="td-r">Total P&L</th></tr></thead>
+        <tbody id="pos-summary-tbody"><tr><td colspan="4" class="empty-cell">No data</td></tr></tbody>
       </table>
     </div>
     <div class="card" style="padding:0; overflow:hidden;">
@@ -730,7 +717,6 @@ tr:hover td { background:var(--bg-card-hover); }
         <div class="info-row"><span class="info-k" data-i18n="botStatus">Bot Status</span><span class="info-v" id="set-status" style="color:var(--success);">Running</span></div>
         <div class="info-row"><span class="info-k" data-i18n="apiConnection">API Connection</span><span class="info-v" id="set-conn" style="color:var(--success);">Stable</span></div>
         <div class="info-row"><span class="info-k">Version</span><span class="info-v" id="set-version">—</span></div>
-        <div class="info-row"><span class="info-k">Account Index</span><span class="info-v" id="set-account">—</span></div>
         <div class="info-row"><span class="info-k">Exchange</span><span class="info-v">Lighter.xyz (mainnet)</span></div>
       </div>
       <div class="card">

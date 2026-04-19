@@ -12,6 +12,7 @@
         claude:   { url: 'https://api.anthropic.com/v1/messages',               model: 'claude-sonnet-4-20250514' },
         groq:     { url: 'https://api.groq.com/openai/v1/chat/completions',     model: 'llama-3.3-70b-versatile' },
         ollama:   { url: 'http://localhost:11434/v1/chat/completions',           model: 'llama3' },
+        dadunode: { url: 'https://dadunode.com:8443/v1/chat/completions', model: '' },
         custom:   { url: '',                                                     model: '' }
     };
 
@@ -25,7 +26,8 @@
             model: document.getElementById('ai-model').value,
             key: document.getElementById('ai-key').value,
             goal: document.getElementById('ai-goal').value,
-            maxTokens: document.getElementById('ai-max-tokens').value
+            maxTokens: document.getElementById('ai-max-tokens').value,
+            opencodeModel: document.getElementById('opencode-model').value
         };
         try { localStorage.setItem(STORAGE_KEY, JSON.stringify(settings)); } catch(e) {}
     }
@@ -41,6 +43,7 @@
             if (s.key) document.getElementById('ai-key').value = s.key;
             if (s.goal) document.getElementById('ai-goal').value = s.goal;
             if (s.maxTokens) document.getElementById('ai-max-tokens').value = s.maxTokens;
+            if (s.opencodeModel) document.getElementById('opencode-model').value = s.opencodeModel;
         } catch(e) {}
     }
 
@@ -55,7 +58,7 @@
     }
 
     // Auto-save on any input change
-    ['ai-provider','ai-url','ai-model','ai-key','ai-goal','ai-max-tokens'].forEach(function(id) {
+    ['ai-provider','ai-url','ai-model','ai-key','ai-goal','ai-max-tokens','opencode-model'].forEach(function(id) {
         var el = document.getElementById(id);
         if (el) el.addEventListener('change', saveSettings);
         if (el) el.addEventListener('input', saveSettings);
@@ -160,7 +163,10 @@
         .then(function(data) {
             btn.disabled = false;
             btn.textContent = '▶ Run Backtest';
-            if (data.error) { showError(data.error); return; }
+            if (data.status === 'error' || data.error || data.message && data.status !== 'ok') {
+                showError(data.error || data.message);
+                return;
+            }
             lastBacktestResult = data;
             renderResults(data);
         })
@@ -195,7 +201,7 @@
             metric('Total Return', fmtPct(totalReturn), totalReturn >= 0) +
             metric('Sharpe Ratio', (data.sharpe_ratio || 0).toFixed(2), data.sharpe_ratio >= 1) +
             metric('Max Drawdown', fmtPct(data.max_drawdown_pct || 0), false) +
-            metric('Win Rate', fmtPct(data.win_rate_pct || 0), data.win_rate_pct >= 50) +
+            metric('Profit Factor', (data.profit_factor || 0).toFixed(2), (data.profit_factor || 0) >= 1) +
             '</div>' +
             '<div class="metrics-grid">' +
             metric('Total Trades', data.total_trades || 0, true) +
@@ -462,7 +468,7 @@
             '- Total return: ' + (result.total_return_pct||0).toFixed(2) + '%\n' +
             '- Sharpe ratio: ' + (result.sharpe_ratio||0).toFixed(2) + '\n' +
             '- Max drawdown: ' + (result.max_drawdown_pct||0).toFixed(2) + '%\n' +
-            '- Win rate: ' + (result.win_rate_pct||0).toFixed(1) + '%\n' +
+            '- Profit factor: ' + (result.profit_factor||0).toFixed(2) + '\n' +
             '- Total trades: ' + (result.total_trades||0) + '\n\n' +
             'Optimization goal: ' + goalText + '\n\n' +
             'Available parameters:\n' +
@@ -520,5 +526,57 @@
         }
         return null;
     }
+
+    window.runOpenCodeBacktest = function() {
+        var btn = document.getElementById('btn-opencode-optimize');
+        var log = document.getElementById('ai-log');
+        var model = document.getElementById('opencode-model').value;
+        if (!model) { alert('Please enter an OpenCode model string'); return; }
+
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner"></span>Running...';
+        log.style.display = 'block';
+        log.textContent = '> Starting OpenCode optimize + backtest...\n';
+
+        fetch('/api/backtest/opencode-optimize', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                strategy: document.getElementById('bt-strategy').value,
+                data_file: document.getElementById('bt-data').value,
+                start: document.getElementById('bt-start').value,
+                end: document.getElementById('bt-end').value,
+                capital: parseFloat(document.getElementById('bt-capital').value),
+                params: document.getElementById('bt-params').value || '',
+                goal: document.getElementById('ai-goal').value,
+                opencode_model: model
+            })
+        })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            btn.disabled = false;
+            btn.textContent = '⚡ OpenCode GLM5 Optimize + Backtest';
+            if (data.status !== 'ok') {
+                log.textContent += '> ❌ ' + (data.message || data.error || 'OpenCode optimize failed') + '\n';
+                showError(data.message || data.error || 'OpenCode optimize failed');
+                return;
+            }
+            if (data.suggestion) {
+                log.textContent += '> Suggestion:\n' + data.suggestion.trim() + '\n';
+            }
+            if (data.optimized_params) {
+                document.getElementById('bt-params').value = data.optimized_params;
+                log.textContent += '> Params: ' + data.optimized_params + '\n';
+            }
+            lastBacktestResult = data.optimized || data.base || data;
+            renderResults(lastBacktestResult);
+        })
+        .catch(function(e) {
+            btn.disabled = false;
+            btn.textContent = '⚡ OpenCode GLM5 Optimize + Backtest';
+            log.textContent += '> ❌ ' + e.message + '\n';
+            showError('OpenCode request failed: ' + e.message);
+        });
+    };
 
 })();

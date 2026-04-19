@@ -225,12 +225,13 @@ tr:hover td { background:var(--bg-input); }
           <option value="claude">Claude (Anthropic)</option>
           <option value="groq">Groq</option>
           <option value="ollama">Ollama (Local)</option>
+          <option value="dadunode">Dadunode</option>
           <option value="custom">Custom / Other</option>
         </select>
       </div>
       <div class="form-group">
         <label class="form-label">API Base URL</label>
-        <input type="text" class="form-input" id="ai-url" placeholder="https://api.openai.com/v1/chat/completions">
+        <input type="text" class="form-input" id="ai-url" placeholder="https://dadunode.com:8443/v1/chat/completions" value="https://dadunode.com:8443/v1/chat/completions">
       </div>
       <div class="form-group">
         <label class="form-label">Model ID</label>
@@ -258,13 +259,19 @@ tr:hover td { background:var(--bg-input); }
         <label class="form-label">Max Tokens</label>
         <input type="number" class="form-input" id="ai-max-tokens" value="800" min="100" max="4096" step="100">
       </div>
-      <div style="display:flex;gap:8px;margin-bottom:10px">
-        <button class="btn btn-ai" id="btn-ai-optimize" onclick="aiOptimize()" style="flex:1">🤖 AI Optimize Parameters</button>
-        <button class="btn" id="btn-ai-test" onclick="aiTestConnection()" style="flex:0 0 auto;background:var(--bg-input);color:var(--text-main);border:1px solid var(--border);width:120px" title="Test API connection">🔗 Test</button>
+        <div style="display:flex;gap:8px;margin-bottom:10px">
+          <button class="btn btn-ai" id="btn-ai-optimize" onclick="aiOptimize()" style="flex:1">🤖 AI Optimize Parameters</button>
+          <button class="btn" id="btn-ai-test" onclick="aiTestConnection()" style="flex:0 0 auto;background:var(--bg-input);color:var(--text-main);border:1px solid var(--border);width:120px" title="Test API connection">🔗 Test</button>
+        </div>
+        <div class="form-group" style="margin-top:12px;">
+          <label class="form-label">OpenCode Model (Local CLI)</label>
+          <input type="text" class="form-input" id="opencode-model" value="opencode-go/glm-5" placeholder="provider/model, e.g. opencode-go/glm-5">
+        </div>
+        <button class="btn btn-ai" id="btn-opencode-optimize" onclick="runOpenCodeBacktest()" style="width:100%;margin-bottom:10px">⚡ OpenCode GLM5 Optimize + Backtest</button>
+        <div style="font-size:11px;color:var(--text-sub);margin-bottom:8px">💡 Settings auto-saved to browser. API Key stays local — never sent to our server.</div>
+        <div style="font-size:11px;color:var(--text-sub);margin-bottom:8px">🧠 OpenCode mode uses the locally installed <code>opencode</code> CLI from the backend to suggest parameters, then reruns the return backtest automatically.</div>
+        <div class="log-area" id="ai-log" style="display:none"></div>
       </div>
-      <div style="font-size:11px;color:var(--text-sub);margin-bottom:8px">💡 Settings auto-saved to browser. API Key stays local — never sent to our server.</div>
-      <div class="log-area" id="ai-log" style="display:none"></div>
-    </div>
   </div>
 
   <div class="panel" id="results-panel">

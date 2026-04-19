@@ -12,16 +12,18 @@
     let allTrades = [];
     let equityChart = null;
     let revenueChart = null;
-    let lastOrderbook = {};
-    let obMarket = '1';
     let notifications = [];
     let ordersData = [];
+    let equityRange = 'all';
 
     const $ = id => document.getElementById(id);
     const fmtPnl = v => (v >= 0 ? '+$' : '-$') + Math.abs(v).toFixed(2);
     const fmtPct = v => (v >= 0 ? '+' : '') + v.toFixed(2) + '%';
     const pnlArrow = v => v > 0.001 ? '▲ ' : v < -0.001 ? '▼ ' : '— ';
     const pnlClass = v => v >= 0 ? 'c-up' : 'c-down';
+    const tradeAction = t => t.action || t.close_type || t.trade_type || 'Order';
+    const isCloseAction = action => /Close|Stop|Emergency|Liquidat/i.test(action || '');
+    const isTerminalCloseAction = action => /Full Close|Stop|Emergency|Liquidat/i.test(action || '');
 
     // ── i18n ──
     const i18nStrings = {
@@ -272,19 +274,6 @@
         });
     }
 
-    // ── Orderbook Tabs ──
-    const obTabs = $('ob-tabs');
-    if (obTabs) {
-        obTabs.querySelectorAll('.ob-tab').forEach(btn => {
-            btn.addEventListener('click', function() {
-                obTabs.querySelectorAll('.ob-tab').forEach(b => b.classList.remove('active'));
-                this.classList.add('active');
-                obMarket = this.getAttribute('data-m');
-                renderOrderbook();
-            });
-        });
-    }
-
     // ── Search ──
     const globalSearch = $('global-search');
     if (globalSearch) {
@@ -309,6 +298,87 @@
             r.style.display = r.textContent.toLowerCase().includes(query) ? '' : 'none';
         });
     }
+
+    function fmtDuration(seconds) {
+        const total = Math.max(0, Math.floor(Number(seconds) || 0));
+        if (!total) return '—';
+        const days = Math.floor(total / 86400);
+        const hours = Math.floor((total % 86400) / 3600);
+        const minutes = Math.floor((total % 3600) / 60);
+        if (days > 0) return `${days}d ${hours}h`;
+        if (hours > 0) return `${hours}h ${minutes}m`;
+        return `${minutes}m`;
+    }
+
+    function downsampleSeries(data, maxPoints) {
+        if (!Array.isArray(data) || data.length <= maxPoints) return data || [];
+        const sampled = [];
+        const step = (data.length - 1) / (maxPoints - 1);
+        for (let i = 0; i < maxPoints; i++) {
+            sampled.push(data[Math.round(i * step)]);
+        }
+        return sampled;
+    }
+
+    function getVisibleEquityData() {
+        if (!equityData.length || equityRange === 'all') return downsampleSeries(equityData, 900);
+        const latestTs = equityData[equityData.length - 1].t;
+        const windows = { '30d': 30 * 86400 * 1000, '7d': 7 * 86400 * 1000, '24h': 24 * 3600 * 1000 };
+        const minTs = latestTs - (windows[equityRange] || 0);
+        return downsampleSeries(equityData.filter(p => p.t >= minTs), 900);
+    }
+
+    function updateEquityRangeButtons() {
+        document.querySelectorAll('#eq-range-group .range-btn').forEach(btn => {
+            btn.classList.toggle('active', btn.getAttribute('data-range') === equityRange);
+        });
+    }
+
+    function buildCloseTradeStats() {
+        const ordered = [...allTrades].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+        const openTimes = {};
+        const closeStats = [];
+
+        ordered.forEach(t => {
+            const symbol = t.symbol || t.market || 'Unknown';
+            const action = tradeAction(t);
+            const ts = new Date(t.timestamp).getTime();
+            if (!Number.isFinite(ts)) return;
+
+            if (isCloseAction(action)) {
+                let durationSecs = Number(t.duration_secs || t.holding_duration_secs || 0);
+                if (!durationSecs && openTimes[symbol] && openTimes[symbol].length) {
+                    durationSecs = Math.max(0, Math.floor((ts - openTimes[symbol][0]) / 1000));
+                }
+                closeStats.push({
+                    symbol,
+                    pnl: Number(t.pnl || 0),
+                    duration_secs: durationSecs,
+                });
+                if (isTerminalCloseAction(action) && openTimes[symbol]) {
+                    openTimes[symbol] = [];
+                }
+                return;
+            }
+
+            if (/Open|Add/i.test(action)) {
+                if (!openTimes[symbol]) openTimes[symbol] = [];
+                if (action === 'Open' || openTimes[symbol].length === 0) {
+                    openTimes[symbol] = [ts];
+                }
+            }
+        });
+
+        return closeStats;
+    }
+
+    document.querySelectorAll('#eq-range-group .range-btn').forEach(btn => {
+        btn.addEventListener('click', function() {
+            equityRange = this.getAttribute('data-range') || 'all';
+            updateEquityRangeButtons();
+            updateEquityChart();
+        });
+    });
 
     // ── History Filter ──
     let historyAssetFilter = 'all';
@@ -363,7 +433,6 @@
             case 'positions': updatePositions(msg.data); break;
             case 'recent_trades': updateTrades(msg.data); break;
             case 'open_orders': updateOrdersPanel(msg.data); break;
-            case 'orderbook': updateOrderbookData(msg.data); break;
             case 'risk': updateRisk(msg.data); break;
         }
     }
@@ -521,7 +590,6 @@
 
         if (d.version) setVal('set-version', d.version);
         if (d.strategy) setVal('strat-name', d.strategy);
-        if (d.account_index) setVal('set-account', d.account_index);
 
         // Equity chart update
         const now = Date.now();
@@ -533,10 +601,12 @@
         }
 
         // Chart info
-        if ($('chart-info') && equityData.length > 1) {
-            const first = equityData[0].v;
+        const visibleEquity = getVisibleEquityData();
+        if ($('chart-info') && visibleEquity.length > 1) {
+            const first = visibleEquity[0].v;
             const changePct = ((lastEquity - first) / first * 100);
-            $('chart-info').textContent = fmtPct(changePct) + ' since start';
+            const labels = { all: 'ALL', '30d': '30D', '7d': '7D', '24h': '24H' };
+            $('chart-info').textContent = `${labels[equityRange] || 'ALL'} ${fmtPct(changePct)} • ${visibleEquity.length}/${equityData.length} pts`;
             $('chart-info').style.color = changePct >= 0 ? 'var(--success)' : 'var(--danger)';
         }
     }
@@ -638,8 +708,8 @@
         tb.innerHTML = rows.map(t => {
             const ts = new Date(t.timestamp).toLocaleTimeString();
             const pnl = t.pnl || 0;
-            const action = t.action || t.close_type || t.trade_type || 'Order';
-            const isClose = action.includes('Close') || action.includes('Stop') || action.includes('Emergency') || action.includes('Liquidat');
+            const action = tradeAction(t);
+            const isClose = isCloseAction(action);
             const actionBadge = isClose
                 ? `<span class="badge ${pnl >= 0 ? 'badge-up' : 'badge-down'}">${action}</span>`
                 : `<span class="badge badge-neutral">${action}</span>`;
@@ -648,49 +718,6 @@
                 : `<td class="td-r" style="color:var(--text-muted)">—</td>`;
             return `<tr><td>${ts}</td><td>${t.symbol||t.market}</td><td>${actionBadge}</td><td><span class="badge ${t.side==='Buy'?'badge-up':'badge-down'}">${t.side}</span></td><td>$${parseFloat(t.price).toFixed(2)}</td><td>${parseFloat(t.quantity).toFixed(6)}</td>${pnlCell}</tr>`;
         }).join('');
-    }
-
-    // ── Orderbook ──
-    function updateOrderbookData(data) {
-        if (!data) return;
-        lastOrderbook[data.market_id] = data;
-        if (String(data.market_id) === obMarket) renderOrderbook();
-    }
-
-    function renderOrderbook() {
-        const data = lastOrderbook[obMarket];
-        const bidsEl = $('ob-bids');
-        const asksEl = $('ob-asks');
-        const spreadEl = $('ob-spread');
-        if (!bidsEl || !asksEl) return;
-        if (!data || !data.bids || !data.asks) {
-            bidsEl.innerHTML = '<div style="padding:16px;text-align:center;color:var(--text-sub);font-size:12px;">Waiting...</div>';
-            asksEl.innerHTML = '';
-            if (spreadEl) spreadEl.textContent = '—';
-            return;
-        }
-        const bids = data.bids.slice(0, 8);
-        const asks = data.asks.slice(0, 8).reverse();
-        const maxBidSize = Math.max(...bids.map(b => parseFloat(b.size) || 0), 0.001);
-        const maxAskSize = Math.max(...asks.map(a => parseFloat(a.size) || 0), 0.001);
-
-        asksEl.innerHTML = asks.map(a => {
-            const depth = (parseFloat(a.size) / maxAskSize * 100).toFixed(1);
-            return `<div class="ob-row ask" style="--depth:${depth}%"><span class="ob-price" style="color:var(--danger);">$${parseFloat(a.price).toFixed(2)}</span><span class="ob-size">${parseFloat(a.size).toFixed(4)}</span></div>`;
-        }).join('');
-
-        bidsEl.innerHTML = bids.map(b => {
-            const depth = (parseFloat(b.size) / maxBidSize * 100).toFixed(1);
-            return `<div class="ob-row bid" style="--depth:${depth}%"><span class="ob-price" style="color:var(--success);">$${parseFloat(b.price).toFixed(2)}</span><span class="ob-size">${parseFloat(b.size).toFixed(4)}</span></div>`;
-        }).join('');
-
-        if (spreadEl && bids.length && asks.length) {
-            const bestAsk = parseFloat(asks[asks.length - 1].price);
-            const bestBid = parseFloat(bids[0].price);
-            const mid = ((bestAsk + bestBid) / 2).toFixed(2);
-            const spreadPct = ((bestAsk - bestBid) / mid * 100).toFixed(3);
-            spreadEl.innerHTML = `$${mid} <span style="font-size:11px;color:var(--text-sub);font-weight:400;">spread ${spreadPct}%</span>`;
-        }
     }
 
     // ── Risk ──
@@ -738,8 +765,8 @@
         tb.innerHTML = filtered.slice(0, 100).map(t => {
             const ts = new Date(t.timestamp).toLocaleString();
             const pnl = t.pnl || 0;
-            const action = t.action || t.close_type || t.trade_type || 'Order';
-            const isClose = action.includes('Close') || action.includes('Stop') || action.includes('Emergency') || action.includes('Liquidat');
+            const action = tradeAction(t);
+            const isClose = isCloseAction(action);
             const actionBadge = isClose
                 ? `<span class="badge ${pnl >= 0 ? 'badge-up' : 'badge-down'}">${action}</span>`
                 : `<span class="badge badge-neutral">${action}</span>`;
@@ -752,57 +779,51 @@
 
     function computeHistoryStats() {
         if (!allTrades.length) return;
-        let totalPnl = 0, wins = 0, closeTrades = 0, vol = 0;
+        let totalPnl = 0, closeTrades = 0, vol = 0;
         allTrades.forEach(t => {
-            const action = t.action || t.close_type || t.trade_type || '';
-            const isClose = action.includes('Close') || action.includes('Stop') || action.includes('Emergency') || action.includes('Liquidat');
+            const isClose = isCloseAction(tradeAction(t));
             vol += Math.abs(parseFloat(t.price) * parseFloat(t.quantity));
             if (isClose) {
-                const p = t.pnl || 0;
-                totalPnl += p;
+                totalPnl += t.pnl || 0;
                 closeTrades++;
-                if (p > 0) wins++;
             }
         });
-        const winRate = closeTrades > 0 ? (wins / closeTrades * 100).toFixed(1) : '0.0';
+        const closeStats = buildCloseTradeStats();
+        const avgDurationSecs = closeStats.length
+            ? closeStats.reduce((sum, t) => sum + (t.duration_secs || 0), 0) / closeStats.length
+            : 0;
         setPnl('hc-pnl', totalPnl);
-        setVal('hc-winrate', winRate + '%');
+        setVal('hc-closed-trades', closeTrades);
         setVal('hc-volume', '$' + vol.toFixed(0));
-        setVal('sp-winrate', winRate + '%');
+        setVal('hc-duration', fmtDuration(avgDurationSecs));
         setVal('sp-trades', allTrades.length);
     }
 
     function renderPositionSummary() {
         const tb = $('pos-summary-tbody');
         if (!tb) return;
-        const closeTrades = allTrades.filter(t => {
-            const action = t.action || t.close_type || '';
-            return action.includes('Close') || action.includes('Stop') || action.includes('Emergency');
-        });
+        const closeTrades = buildCloseTradeStats();
         if (closeTrades.length === 0) {
-            tb.innerHTML = '<tr><td colspan="5" class="empty-cell">No closed positions yet</td></tr>';
+            tb.innerHTML = '<tr><td colspan="4" class="empty-cell">No closed positions yet</td></tr>';
             return;
         }
         const groups = {};
         closeTrades.forEach(t => {
-            const asset = t.symbol || t.market || 'Unknown';
-            if (!groups[asset]) groups[asset] = { wins: 0, losses: 0, totalPnl: 0, count: 0 };
+            const asset = t.symbol || 'Unknown';
+            if (!groups[asset]) groups[asset] = { totalPnl: 0, count: 0, durationSum: 0 };
             const pnl = t.pnl || 0;
             groups[asset].count++;
             groups[asset].totalPnl += pnl;
-            if (pnl > 0) groups[asset].wins++;
-            else groups[asset].losses++;
+            groups[asset].durationSum += Number(t.duration_secs || 0);
         });
-        let totalPnl = 0, totalCount = 0, totalWins = 0;
+        let totalPnl = 0, totalCount = 0, totalDuration = 0;
         const rows = Object.entries(groups).map(([asset, g]) => {
-            const wr = g.count > 0 ? (g.wins / g.count * 100).toFixed(1) : '0.0';
             totalPnl += g.totalPnl;
             totalCount += g.count;
-            totalWins += g.wins;
-            return `<tr><td><b>${asset}</b></td><td>${g.count}</td><td><span class="c-up">${g.wins}W</span> / <span class="c-down">${g.losses}L</span></td><td>${wr}%</td><td class="td-r ${pnlClass(g.totalPnl)}">${fmtPnl(g.totalPnl)}</td></tr>`;
+            totalDuration += g.durationSum;
+            return `<tr><td><b>${asset}</b></td><td>${g.count}</td><td>${fmtDuration(g.durationSum / Math.max(g.count, 1))}</td><td class="td-r ${pnlClass(g.totalPnl)}">${fmtPnl(g.totalPnl)}</td></tr>`;
         });
-        const totalWr = totalCount > 0 ? (totalWins / totalCount * 100).toFixed(1) : '0.0';
-        rows.push(`<tr style="border-top:2px solid var(--border);font-weight:600;"><td>Total</td><td>${totalCount}</td><td><span class="c-up">${totalWins}W</span> / <span class="c-down">${totalCount - totalWins}L</span></td><td>${totalWr}%</td><td class="td-r ${pnlClass(totalPnl)}">${fmtPnl(totalPnl)}</td></tr>`);
+        rows.push(`<tr style="border-top:2px solid var(--border);font-weight:600;"><td>Total</td><td>${totalCount}</td><td>${fmtDuration(totalDuration / Math.max(totalCount, 1))}</td><td class="td-r ${pnlClass(totalPnl)}">${fmtPnl(totalPnl)}</td></tr>`);
         tb.innerHTML = rows.join('');
     }
 
@@ -856,6 +877,8 @@
         const gridColor = isDark ? '#1B254B' : '#E9EDF7';
         const tickColor = isDark ? '#56607B' : '#A3AED0';
         const primaryColor = isDark ? '#7551FF' : '#4318FF';
+        const visibleEquity = getVisibleEquityData();
+        updateEquityRangeButtons();
 
         const ctxEq = $('equityChart');
         if (!ctxEq) return;
@@ -864,10 +887,14 @@
         equityChart = new Chart(ctxEq.getContext('2d'), {
             type: 'line',
             data: {
-                labels: equityData.map(d => { const dt = new Date(d.t); return dt.toLocaleDateString(undefined, {month:'short', day:'numeric'}) + ' ' + dt.toLocaleTimeString(undefined, {hour:'2-digit', minute:'2-digit'}); }),
+                labels: visibleEquity.map(d => {
+                    const dt = new Date(d.t);
+                    return dt.toLocaleDateString(undefined, {month:'short', day:'numeric'}) + ' ' +
+                        dt.toLocaleTimeString(undefined, {hour:'2-digit', minute:'2-digit'});
+                }),
                 datasets: [{
                     label: 'Equity',
-                    data: equityData.map(d => d.v),
+                    data: visibleEquity.map(d => d.v),
                     borderColor: primaryColor,
                     borderWidth: 2.5,
                     fill: true,
@@ -936,9 +963,22 @@
 
     function updateEquityChart() {
         if (!equityChart) return;
-        equityChart.data.labels = equityData.map(d => { const dt = new Date(d.t); return dt.toLocaleDateString(undefined, {month:'short', day:'numeric'}) + ' ' + dt.toLocaleTimeString(undefined, {hour:'2-digit', minute:'2-digit'}); });
-        equityChart.data.datasets[0].data = equityData.map(d => d.v);
+        const visibleEquity = getVisibleEquityData();
+        equityChart.data.labels = visibleEquity.map(d => {
+            const dt = new Date(d.t);
+            return dt.toLocaleDateString(undefined, {month:'short', day:'numeric'}) + ' ' +
+                dt.toLocaleTimeString(undefined, {hour:'2-digit', minute:'2-digit'});
+        });
+        equityChart.data.datasets[0].data = visibleEquity.map(d => d.v);
         equityChart.update('none');
+        if ($('chart-info') && visibleEquity.length > 1) {
+            const first = visibleEquity[0].v;
+            const last = visibleEquity[visibleEquity.length - 1].v;
+            const labels = { all: 'ALL', '30d': '30D', '7d': '7D', '24h': '24H' };
+            const changePct = ((last - first) / first) * 100;
+            $('chart-info').textContent = `${labels[equityRange] || 'ALL'} ${fmtPct(changePct)} • ${visibleEquity.length}/${equityData.length} pts`;
+            $('chart-info').style.color = changePct >= 0 ? 'var(--success)' : 'var(--danger)';
+        }
     }
 
     function updateRevenueChart(pnlMap) {
