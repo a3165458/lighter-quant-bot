@@ -230,20 +230,20 @@ impl LighterWebSocket {
 
     /// Resolve symbol string to market_id
     fn resolve_market_id(symbol: &str) -> u32 {
+        // 优先按数字市场 ID 解析，其次查全局符号注册表
+        if let Ok(id) = symbol.parse::<u32>() {
+            return id;
+        }
         match symbol.to_uppercase().as_str() {
-            "ETH" | "ETHUSDC" | "ETH-PERP" | "ETHPERP" => 0,
-            "BTC" | "BTCUSDC" | "BTC-PERP" | "BTCPERP" => 1,
-            _ => symbol.parse::<u32>().unwrap_or(0),
+            "ETHUSDC" | "ETH-PERP" | "ETHPERP" => 0,
+            "BTCUSDC" | "BTC-PERP" | "BTCPERP" => 1,
+            other => super::symbols::market_id_of(other).unwrap_or(0),
         }
     }
 
     /// Map market_id to symbol string
     fn market_id_to_symbol(market_id: u32) -> String {
-        match market_id {
-            0 => "ETH".to_string(),
-            1 => "BTC".to_string(),
-            _ => format!("MARKET_{}", market_id),
-        }
+        super::symbols::symbol_of(market_id)
     }
 
     /// Extract market_id from channel string like "order_book:0" or "trade:1"

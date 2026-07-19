@@ -4,3 +4,4 @@ pub mod types;
 pub mod auth;
 pub mod error;
 pub mod ffi;
+pub mod symbols;

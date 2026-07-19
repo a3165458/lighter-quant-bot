@@ -63,6 +63,8 @@ pub struct MarketInfo {
     pub min_base_amount: f64,
     pub min_quote_amount: f64,
     pub last_trade_price: f64,
+    /// "perp" 或 "spot"（Robinhood Chain 实例含现货市场）
+    pub market_type: String,
 }
 
 impl MarketInfo {

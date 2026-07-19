@@ -14,6 +14,8 @@ pub struct LighterClient {
     account_index: i64,
     api_key_index: i32,
     nonce: AtomicI64,
+    /// 需要轮询活跃订单的市场（默认主网 ETH/BTC；启动时按配置覆盖）
+    active_markets: std::sync::RwLock<Vec<u32>>,
 }
 
 impl LighterClient {
@@ -42,7 +44,13 @@ impl LighterClient {
             account_index,
             api_key_index,
             nonce: AtomicI64::new(0),
+            active_markets: std::sync::RwLock::new(vec![0, 1]),
         }
+    }
+
+    /// 设置需要轮询活跃订单的市场列表
+    pub fn set_active_markets(&self, market_ids: Vec<u32>) {
+        *self.active_markets.write().unwrap() = market_ids;
     }
 
     /// Backward-compatible constructor matching the old 4-arg signature.
@@ -249,6 +257,37 @@ impl LighterClient {
                 message: format!("No market details for market_id={}", market_id),
             })?;
 
+        Ok(Self::parse_market_details(details, market_id))
+    }
+
+    /// 获取交易所全部市场元数据（perp + spot）
+    pub async fn get_all_markets(&self) -> Result<Vec<MarketInfo>, LighterError> {
+        let url = format!("{}/api/v1/orderBookDetails", self.base_url);
+        debug!("GET {}", url);
+
+        let resp: Value = self.http_get_json(&url).await?;
+        let arr = resp["order_book_details"]
+            .as_array()
+            .ok_or_else(|| LighterError::ApiError {
+                code: -1,
+                message: "No order_book_details in response".to_string(),
+            })?;
+
+        Ok(arr
+            .iter()
+            .map(|d| {
+                let mid = d["market_id"]
+                    .as_u64()
+                    .map(|v| v as u32)
+                    .or_else(|| d["market_id"].as_str().and_then(|s| s.parse().ok()))
+                    .unwrap_or(u32::MAX);
+                Self::parse_market_details(d, mid)
+            })
+            .filter(|m| m.market_id != u32::MAX)
+            .collect())
+    }
+
+    fn parse_market_details(details: &Value, market_id: u32) -> MarketInfo {
         let size_decimals = details["size_decimals"]
             .as_str()
             .and_then(|s| s.parse().ok())
@@ -278,14 +317,15 @@ impl LighterClient {
 
         let symbol = details["symbol"]
             .as_str()
-            .unwrap_or(match market_id {
-                0 => "ETH",
-                1 => "BTC",
-                _ => "UNKNOWN",
-            })
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| super::symbols::symbol_of(market_id));
+
+        let market_type = details["market_type"]
+            .as_str()
+            .unwrap_or("perp")
             .to_string();
 
-        Ok(MarketInfo {
+        MarketInfo {
             market_id,
             symbol,
             size_decimals,
@@ -293,7 +333,8 @@ impl LighterClient {
             min_base_amount: min_base,
             min_quote_amount: min_quote,
             last_trade_price: last_price,
-        })
+            market_type,
+        }
     }
 
     /// Get order book
@@ -311,11 +352,7 @@ impl LighterClient {
 
         let resp: Value = self.http_get_json(&url).await?;
 
-        let symbol = match market_id {
-            0 => "ETH".to_string(),
-            1 => "BTC".to_string(),
-            _ => format!("MARKET_{}", market_id),
-        };
+        let symbol = super::symbols::symbol_of(market_id);
 
         let parse_levels = |key: &str| -> Vec<PriceLevel> {
             resp[key]
@@ -453,11 +490,7 @@ impl LighterClient {
 
         let resp: Value = self.http_get_json(&url).await?;
 
-        let symbol = match market_id {
-            0 => "ETH".to_string(),
-            1 => "BTC".to_string(),
-            _ => format!("MARKET_{}", market_id),
-        };
+        let symbol = super::symbols::symbol_of(market_id);
 
         let candles = resp["c"]
             .as_array()
@@ -695,8 +728,9 @@ impl LighterClient {
         let deadline = chrono::Utc::now().timestamp() + 60;
         let auth_token = ffi::create_auth_token(deadline)?;
 
-        // Query each market (0=ETH, 1=BTC)
-        for market_id in [0u32, 1u32] {
+        // Query each configured market
+        let market_ids = self.active_markets.read().unwrap().clone();
+        for market_id in market_ids {
             let url = format!(
                 "{}/api/v1/accountActiveOrders?account_index={}&market_id={}&auth={}",
                 self.base_url, self.account_index, market_id, auth_token
@@ -742,7 +776,7 @@ impl LighterClient {
             };
 
             if let Some(order_arr) = json.get("orders").and_then(|o| o.as_array()) {
-                let market_name = if market_id == 0 { "ETH" } else { "BTC" };
+                let market_name = super::symbols::symbol_of(market_id);
                 for o in order_arr {
                     let is_ask = o["is_ask"].as_str()
                         .or_else(|| o["is_ask"].as_bool().map(|b| if b { "1" } else { "0" }).or(Some("0")))

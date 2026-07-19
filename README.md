@@ -98,6 +98,36 @@ risk:
     position_take_profit_percent: 5
 ```
 
+## 🪶 Robinhood Chain 实例
+
+机器人同时支持 [Lighter on Robinhood Chain](https://robinhoodchain.lighter.xyz/)（USDG 计价，含 BTC/ETH/SOL 等加密永续与 AAPL/TSLA/NVDA 等股票永续）：
+
+```bash
+# 实盘（.env 需使用 Robinhood Chain 实例的账户凭据）
+cargo run --release -- live --config config/settings.robinhood.yaml
+
+# 下载 RH 实例历史数据（--url 指定实例）
+cargo run --release -- download --symbol TSLA --interval 1h \
+  --start 2026-06-26 --end 2026-07-18 --url https://api.rh.lighter.xyz
+
+# 回测
+cargo run --release -- backtest --strategy grid \
+  --data backtests/data/TSLA-rh-1h-20260626-20260718.csv \
+  --start 2026-06-26 --end 2026-07-18 --params "grid_count=8,investment=30,deviation=0.003"
+```
+
+关键差异：
+
+| 项目 | 主网 | Robinhood Chain |
+|------|------|-----------------|
+| REST | `https://mainnet.zklighter.elliot.ai` | `https://api.rh.lighter.xyz` |
+| WebSocket | `wss://mainnet.zklighter.elliot.ai/stream` | `wss://api.rh.lighter.xyz/stream` |
+| 签名 chain_id | 304 | 466324 |
+| 计价资产 | USDC | USDG |
+| 市场 | 加密永续 | 加密+股票永续、现货（股票永续周末休市） |
+
+市场符号与 ID 在启动时从交易所动态拉取注册，无需手工维护映射。
+
 ## 📊 Dashboard
 
 访问 `http://localhost:2028`（默认端口）
@@ -112,6 +142,19 @@ risk:
 | 🤖 AI Lab | 回测引擎 + AI 参数优化 + OpenCode GLM5 联合回测 |
 
 ## 📝 更新历史 / 回测记录
+
+### 2026-07-19
+
+- **Robinhood Chain 实例支持**
+  - 新增 `config/settings.robinhood.yaml`（REST/WS 端点、签名 chain_id=466324）
+  - 市场符号注册表改为启动时从 `/api/v1/orderBookDetails` 动态拉取，移除全部 ETH/BTC 硬编码
+  - `download` 命令支持 `--url` 指定实例并自动分页（API 单次上限 500 根）
+- **策略修复与调参**
+  - 趋势策略重写：仓位状态真正生效（原止损/止盈为死代码）、EMA 交叉、移动止损、名义金额仓位
+  - 回测引擎夏普年化按数据间隔自动推断
+  - 真实主网 1h 数据（2026-01-01~07-18）train/OOS 调参：网格更新为 `grid_count=8, deviation=0.003`
+    （样本外 Sharpe ≈1.0；旧参数 dev=0.016 样本外为负）；趋势策略样本外不稳健，保持禁用
+  - RH 实例仅 ~3 周历史（2026-06-26 上线），近期单边行情下网格为负——建议小仓位观察、数据积累后再独立调参
 
 ### 2026-04-19
 

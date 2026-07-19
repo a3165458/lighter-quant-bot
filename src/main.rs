@@ -83,6 +83,12 @@ enum Commands {
         start: String,
         #[arg(long)]
         end: String,
+        /// REST API base URL (mainnet 或 Robinhood Chain 实例)
+        #[arg(long, default_value = "https://mainnet.zklighter.elliot.ai")]
+        url: String,
+        /// 输出文件名标签（默认取 URL 推断: mainnet / rh）
+        #[arg(long)]
+        tag: Option<String>,
     },
 
     /// Generate test data
@@ -110,8 +116,8 @@ async fn main() -> Result<()> {
             run_optimize(&strategy, &data, &start, &end, capital, output.as_deref()).await
         }
         Commands::Dashboard { host, port } => run_dashboard(&host, port).await,
-        Commands::Download { symbol, interval, start, end } => {
-            download_data(&symbol, &interval, &start, &end).await
+        Commands::Download { symbol, interval, start, end, url, tag } => {
+            download_data(&symbol, &interval, &start, &end, &url, tag.as_deref()).await
         }
         Commands::GenerateData { symbol, days } => generate_test_data(&symbol, days).await,
     }
@@ -187,6 +193,25 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
         .unwrap_or_else(|_| vec![0, 1]);
     let market_ids: Vec<u32> = markets.iter().map(|m| *m as u32).collect();
 
+    // Fetch full market list and register symbol map (supports Robinhood Chain instance
+    // with stock perps/spot markets — no hardcoded ETH/BTC assumptions)
+    let all_markets: Vec<lighter::types::MarketInfo> = match lighter_client.get_all_markets().await {
+        Ok(ms) => {
+            lighter::symbols::register_all(ms.iter().map(|m| (m.market_id, m.symbol.clone())));
+            info!("📚 Market registry: {} markets ({} perp)",
+                ms.len(), ms.iter().filter(|m| m.market_type == "perp").count());
+            ms
+        }
+        Err(e) => {
+            warn!("⚠️ Failed to fetch full market list: {} — falling back to ETH/BTC defaults", e);
+            Vec::new()
+        }
+    };
+    lighter_client.set_active_markets(market_ids.clone());
+    // symbol -> MarketInfo for dynamic decimals / min-amount lookups
+    let market_registry: std::collections::HashMap<String, lighter::types::MarketInfo> =
+        all_markets.iter().map(|m| (m.symbol.clone(), m.clone())).collect();
+
     // Fetch market info
     let mut market_infos = std::collections::HashMap::new();
     for &mid in &market_ids {
@@ -253,10 +278,17 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
         active_markets: market_ids.clone(),
         trading_paused: false,
         cancel_all_requested: false,
-        available_markets: vec![
-            (0, "ETH".to_string()),
-            (1, "BTC".to_string()),
-        ],
+        available_markets: {
+            let perps: Vec<(u32, String)> = all_markets.iter()
+                .filter(|m| m.market_type == "perp")
+                .map(|m| (m.market_id, m.symbol.clone()))
+                .collect();
+            if perps.is_empty() {
+                vec![(0, "ETH".to_string()), (1, "BTC".to_string())]
+            } else {
+                perps
+            }
+        },
         risk_config: serde_json::json!({
             "max_drawdown_pct": 10.0,
             "daily_loss_limit_pct": 5.0,
@@ -420,7 +452,21 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
     let stale_price_pct = 0.012_f64; // Cancel orders >1.2% from mid price
     let max_order_age_secs = 300_u64; // Force cancel-all after 5 minutes if stale
     let configured_market_ids = market_ids.clone();
+    let registry_refresh = market_registry.clone();
     tokio::spawn(async move {
+        // 动态市场元数据查询（回退到主网 ETH/BTC 默认值）
+        let market_id_of = |sym: &str| -> Option<u32> {
+            registry_refresh.get(sym).map(|m| m.market_id)
+                .or_else(|| lighter::symbols::market_id_of(sym))
+        };
+        let size_decimals_of = |sym: &str| -> i32 {
+            registry_refresh.get(sym).map(|m| m.size_decimals as i32)
+                .unwrap_or(if sym == "BTC" { 5 } else { 4 })
+        };
+        let min_change_of = |sym: &str| -> f64 {
+            registry_refresh.get(sym).map(|m| m.min_base_amount * 0.95)
+                .unwrap_or(if sym == "BTC" { 0.00019 } else { 0.0049 })
+        };
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
         let mut at_max_since: Option<std::time::Instant> = None;
         // Equity-based realized PnL tracking
@@ -477,7 +523,10 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
                         // Strategy 1: Cancel individual orders that are too far from mid price
                         let mut cancelled = 0u32;
                         for order in &orders {
-                            let market_id = if order.symbol == "ETH" { 0u32 } else { 1u32 };
+                            let market_id = match market_id_of(&order.symbol) {
+                                Some(id) => id,
+                                None => continue,
+                            };
                             if let Some(&mid) = mid_prices.get(&market_id) {
                                 let diff = (order.price - mid).abs() / mid;
                                 if diff > stale_price_pct {
@@ -549,7 +598,13 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
                     // ===== Auto-close positions on non-configured markets =====
                     for pos in &acct.positions {
                         if pos.size.abs() < 1e-10 { continue; }
-                        let pos_market_id = if pos.symbol == "ETH" { 0u32 } else { 1u32 };
+                        let pos_market_id = match market_id_of(&pos.symbol) {
+                            Some(id) => id,
+                            None => {
+                                warn!("⚠️ Unknown market for position symbol {}, skipping auto-close check", pos.symbol);
+                                continue;
+                            }
+                        };
                         if !configured_market_ids.contains(&pos_market_id) {
                             warn!("⚠️ Found position on non-configured market {}: {} {:?} {:.6} — closing",
                                 pos.symbol, pos.symbol, pos.side, pos.size);
@@ -590,8 +645,7 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
                     let mut curr_pos_map: std::collections::HashMap<String, (lighter::types::Side, f64, f64)> = std::collections::HashMap::new();
                     for p in &acct.positions {
                         if p.size.abs() > 1e-10 {
-                            let decimals = if p.symbol == "ETH" { 4 } else { 5 };
-                            let factor = 10_f64.powi(decimals);
+                            let factor = 10_f64.powi(size_decimals_of(&p.symbol));
                             let rounded_size = (p.size * factor).round() / factor;
                             curr_pos_map.insert(p.symbol.clone(), (p.side, rounded_size, p.entry_price));
                         }
@@ -602,7 +656,7 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
                         let mut position_reductions: Vec<(String, lighter::types::Side, f64, f64, &str)> = Vec::new();
                         for (symbol, (prev_side, prev_size, prev_entry)) in &prev_positions {
                             // Min change threshold per market
-                            let min_change = if symbol == "ETH" { 0.0049 } else { 0.00019 };
+                            let min_change = min_change_of(symbol);
                             match curr_pos_map.get(symbol) {
                                 Some((curr_side, curr_size, _)) => {
                                     if *curr_side != *prev_side {
@@ -641,7 +695,7 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
                                 } else {
                                     realized_pnl_this_cycle
                                 };
-                                let market_id = if symbol == "ETH" { 0u32 } else { 1u32 };
+                                let market_id = market_id_of(symbol).unwrap_or(0);
 
                                 info!("💰 {} {}: {:?} {:.6} @ entry={:.2} | PnL: {}{:.4}",
                                     close_type, symbol, prev_side, closed_size, prev_entry,
@@ -675,7 +729,7 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
                     let mut next_opened_at = position_opened_at.clone();
                     next_opened_at.retain(|symbol, _| curr_pos_map.contains_key(symbol));
                     for (symbol, (curr_side, curr_size, _)) in &curr_pos_map {
-                        let min_change = if symbol == "ETH" { 0.0049 } else { 0.00019 };
+                        let min_change = min_change_of(symbol);
                         let should_reset = match prev_positions.get(symbol) {
                             Some((prev_side, prev_size, _)) => *prev_side != *curr_side || *prev_size < min_change,
                             None => *curr_size >= min_change,
@@ -690,8 +744,7 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
                     prev_positions.clear();
                     for p in &acct.positions {
                         if p.size.abs() > 1e-10 {
-                            let decimals = if p.symbol == "ETH" { 4 } else { 5 };
-                            let factor = 10_f64.powi(decimals);
+                            let factor = 10_f64.powi(size_decimals_of(&p.symbol));
                             let rounded_size = (p.size * factor).round() / factor;
                             prev_positions.insert(p.symbol.clone(), (p.side, rounded_size, p.entry_price));
                         }
@@ -815,8 +868,16 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
 
                             // Get fresh market prices for aggressive close
                             let mut fresh_prices: std::collections::HashMap<u32, f64> = std::collections::HashMap::new();
-                            // Fetch prices for all known markets (positions may exist on any)
-                            for &mid in &[0u32, 1u32] {
+                            // Fetch prices for configured markets plus any market with an open position
+                            let mut close_mids: std::collections::HashSet<u32> =
+                                configured_market_ids.iter().copied().collect();
+                            for pos in &acct.positions {
+                                if pos.size.abs() < 1e-10 { continue; }
+                                if let Some(id) = market_id_of(&pos.symbol) {
+                                    close_mids.insert(id);
+                                }
+                            }
+                            for &mid in &close_mids {
                                 if let Ok(fmi) = client_for_refresh.get_market_info(mid).await {
                                     if fmi.last_trade_price > 0.0 {
                                         fresh_prices.insert(mid, fmi.last_trade_price);
@@ -834,7 +895,9 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
                                 let mi = market_infos_refresh.values().find(|m| {
                                     pos.symbol.contains(&m.symbol) || m.symbol.contains(&pos.symbol.replace("market_", ""))
                                 });
-                                let market_id = mi.map(|m| m.market_id).unwrap_or(0);
+                                let market_id = mi.map(|m| m.market_id)
+                                    .or_else(|| market_id_of(&pos.symbol))
+                                    .unwrap_or(0);
 
                                 // Use CURRENT market price + slippage (not entry price!)
                                 let current_mid = fresh_prices.get(&market_id).copied().unwrap_or(pos.entry_price);
@@ -892,7 +955,9 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
                             let mi = market_infos_refresh.values().find(|m| {
                                 sig.symbol.contains(&m.symbol) || m.symbol.contains(&sig.symbol.replace("market_", ""))
                             });
-                            let market_id = mi.map(|m| m.market_id).unwrap_or(0);
+                            let market_id = mi.map(|m| m.market_id)
+                                .or_else(|| market_id_of(&sig.symbol))
+                                .unwrap_or(0);
 
                             info!("📌 {} — {} {:?} {:.6} @ {:.2} (entry={:.2})",
                                 sig.reason, sig.symbol, sig.side_to_close, sig.size, sig.current_price, sig.entry_price);
@@ -1436,14 +1501,10 @@ async fn download_data(
     interval: &str,
     start_date: &str,
     end_date: &str,
+    base_url: &str,
+    tag: Option<&str>,
 ) -> Result<()> {
-    info!("📥 Download data: {} {} {} {}", symbol, interval, start_date, end_date);
-
-    let market_id = match symbol.to_ascii_uppercase().as_str() {
-        "ETH" => 0,
-        "BTC" => 1,
-        other => anyhow::bail!("Unsupported symbol for Lighter download: {}", other),
-    };
+    info!("📥 Download data: {} {} {} {} ({})", symbol, interval, start_date, end_date, base_url);
 
     let start = data::loader::parse_range_start(start_date)
         .context("Invalid start date")?;
@@ -1462,12 +1523,28 @@ async fn download_data(
         other => anyhow::bail!("Unsupported interval: {}", other),
     };
 
-    let client = lighter::client::LighterClient::new(
-        "",
-        "",
-        "https://mainnet.zklighter.elliot.ai",
-        "wss://mainnet.zklighter.elliot.ai/stream",
+    let client = lighter::client::LighterClient::new("", "", base_url, "");
+
+    // 从交易所动态解析 symbol -> market_id（优先 perp 市场）
+    let all_markets = client
+        .get_all_markets()
+        .await
+        .context("Failed to fetch market list")?;
+    lighter::symbols::register_all(
+        all_markets.iter().map(|m| (m.market_id, m.symbol.clone())),
     );
+    let upper = symbol.to_ascii_uppercase();
+    let market_id = all_markets
+        .iter()
+        .filter(|m| m.symbol.to_ascii_uppercase() == upper)
+        .min_by_key(|m| if m.market_type == "perp" { 0 } else { 1 })
+        .map(|m| m.market_id)
+        .ok_or_else(|| {
+            let mut available: Vec<&str> = all_markets.iter().map(|m| m.symbol.as_str()).collect();
+            available.sort();
+            anyhow::anyhow!("Symbol {} not found. Available: {}", symbol, available.join(", "))
+        })?;
+    info!("   Resolved {} -> market_id {}", symbol, market_id);
 
     // API 单次最多返回 500 根，按窗口分页拉取
     const MAX_CANDLES_PER_REQ: i64 = 500;
@@ -1503,9 +1580,15 @@ async fn download_data(
         anyhow::bail!("No candles returned for {} {} {} {}", symbol, interval, start_date, end_date);
     }
 
+    let network_tag = tag
+        .map(|t| t.to_string())
+        .unwrap_or_else(|| {
+            if base_url.contains("rh.lighter") { "rh".to_string() } else { "mainnet".to_string() }
+        });
     let output_path = format!(
-        "backtests/data/{}-{}-{}-{}.csv",
+        "backtests/data/{}-{}-{}-{}-{}.csv",
         symbol.to_ascii_uppercase(),
+        network_tag,
         interval,
         start.format("%Y%m%d"),
         end.with_timezone(&Utc).format("%Y%m%d")

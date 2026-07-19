@@ -1,0 +1,106 @@
+# Lighter on Robinhood Chain — Trading Bot Configuration
+# 用法: cargo run --release -- live --config config/settings.robinhood.yaml
+# 注意: .env 中的 LIGHTER_SECRET_KEY / LIGHTER_ACCOUNT_INDEX / LIGHTER_API_KEY_INDEX
+#       必须是 Robinhood Chain 实例的账户凭据（与主网账户不通用）
+lighter:
+  # Robinhood Chain instance (quote asset: USDG, L1 chain id 4663)
+  rest_url: "https://api.rh.lighter.xyz"
+  ws_url: "wss://api.rh.lighter.xyz/stream"
+  # zkLighter signer chain id for the Robinhood Chain instance
+  # (mainnet=304, testnet=300, robinhood=466324 — per official lighter-python SDK)
+  chain_id: 466324
+
+  # Connection parameters
+  connection:
+    timeout_ms: 10000
+    retry_count: 5
+    retry_delay_ms: 2000
+    heartbeat_interval_ms: 60000
+
+# Trading configuration
+trading:
+  # Markets to trade. Robinhood Chain 实例市场 ID 与主网不同:
+  #   加密永续: 0=ETH 1=BTC 2=HYPE 3=SOL 4=ZEC ...
+  #   股票永续: 10=AAPL 11=AMZN 12=GOOGL 13=META 14=MSFT 15=NVDA 16=TSLA
+  #             17=ORCL 18=SPCX 19=BABA 23=COIN 25=QQQ 26=SPY 29=AMD 34=PLTR ...
+  #   现货 (USDG): 2048=ETH/USDG 2049=AAPL/USDG ... (机器人当前只支持永续)
+  # 完整列表: curl https://api.rh.lighter.xyz/api/v1/orderBooks
+  markets: [1]
+
+  # Maximum number of open orders at any time
+  max_open_orders: 8
+
+  # Strategy configuration
+  # 沿用主网 2026-07-19 调参结论（密集网格样本外最稳健）。
+  # RH 实例 2026-06-26 才上线，历史数据短，暂无法独立调参——先小仓位验证
+  strategies:
+    grid_trading:
+      enabled: true
+      grid_count: 8
+      investment_per_grid: 30
+      price_deviation: 0.003
+
+    trend_following:
+      enabled: false
+      fast_ma: 10
+      slow_ma: 21
+      stop_loss: 0.03
+      take_profit: 0.04
+      trailing_stop: 0.0
+      notional: 1000
+
+  # Position management
+  position:
+    max_single_trade_percent: 50
+    max_total_position_percent: 200
+    risk_per_trade_percent: 1.5
+
+# Risk management
+risk:
+  stop_loss:
+    enabled: true
+    max_drawdown_percent: 10
+    daily_loss_limit_percent: 5
+    # Per-position stop-loss/take-profit (percentage from entry)
+    position_stop_loss_percent: 3
+    position_take_profit_percent: 5
+
+  position_limit:
+    max_leverage: 5
+    max_position_size: 100
+
+  monitoring_interval_ms: 1000
+
+# Backtest configuration
+backtest:
+  data:
+    start_date: "2026-06-26"   # RH 实例上线日
+    end_date: "2026-07-18"
+    interval: "1h"
+
+  initial_capital: 10000
+  commission_percent: 0.0
+  slippage_percent: 0.02
+
+  reporting:
+    generate_html: true
+    save_trades: true
+    plot_equity_curve: true
+
+# Dashboard
+dashboard:
+  enabled: true
+  host: "127.0.0.1"
+  port: 2029
+  refresh_interval_ms: 1000
+
+  charts:
+    equity_curve_points: 1000
+    order_book_depth: 20
+
+# Logging
+logging:
+  level: "info"
+  file: "logs/lighter-bot-rh.log"
+  rotation: "daily"
+  format: "json"
