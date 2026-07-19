@@ -22,15 +22,16 @@ trading:
   max_open_orders: 8
 
   # Strategy configuration
-  # 2026-07-19 参数扫描（真实 Lighter 1h 数据 2026-01-01~07-18，训练 01-01~05-15 / 样本外 05-16~07-18）:
-  #   密集网格 grid_count=8, deviation=0.003 训练期夏普 1.75、样本外夏普 1.01（旧参数 dev=0.016 样本外为负）
+  # 2026-07-19 多窗口稳健性检验（真实 1h 数据 2026-01-01~07-18，切成 1-3月/3-5月/5-6月/6-7月四段）:
+  #   grid_count=12, deviation=0.004 四个窗口全部为正，累计 +3.00%，最大回撤 1.78%
+  #   此前单一 train/OOS 切分选出的 dev=0.003 在 6-7 月上涨段为负，已被多窗口结果取代
   #   趋势策略样本内夏普 >2 但样本外不稳健，保持禁用
   strategies:
     grid_trading:
       enabled: true
-      grid_count: 8
+      grid_count: 12
       investment_per_grid: 30
-      price_deviation: 0.003
+      price_deviation: 0.004
 
     trend_following:
       enabled: false

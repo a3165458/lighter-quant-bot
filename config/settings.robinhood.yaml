@@ -31,14 +31,18 @@ trading:
   max_open_orders: 8
 
   # Strategy configuration
-  # 沿用主网 2026-07-19 调参结论（密集网格样本外最稳健）。
-  # RH 实例 2026-06-26 才上线，历史数据短，暂无法独立调参——先小仓位验证
+  # RH BTC 价格与主网 EVM Lighter 同源（已验证：07-09 后价差仅 0.03~0.07%，
+  # 且两边数据在相同窗口回测结果一致），因此直接采用主网 6.5 个月历史的调参结论。
+  # 2026-07-19 多窗口稳健性检验（1-3月/3-5月/5-6月/6-7月四段行情）：
+  #   grid_count=12, deviation=0.004 四个窗口全部为正，累计 +3.00%，最大回撤 1.78%
+  #   （保守备选: grid_count=8, deviation=0.004，最差窗口夏普更高但累计 +2.30%）
+  # 注意 07-04~07-08 RH 上线初期价格偏离主网最高 4%，该时段数据不可用于回测
   strategies:
     grid_trading:
       enabled: true
-      grid_count: 8
+      grid_count: 12
       investment_per_grid: 30
-      price_deviation: 0.003
+      price_deviation: 0.004
 
     trend_following:
       enabled: false
