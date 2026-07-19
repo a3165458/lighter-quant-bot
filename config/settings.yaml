@@ -22,19 +22,24 @@ trading:
   max_open_orders: 8
 
   # Strategy configuration
+  # 2026-07-19 参数扫描（真实 Lighter 1h 数据 2026-01-01~07-18，训练 01-01~05-15 / 样本外 05-16~07-18）:
+  #   密集网格 grid_count=8, deviation=0.003 训练期夏普 1.75、样本外夏普 1.01（旧参数 dev=0.016 样本外为负）
+  #   趋势策略样本内夏普 >2 但样本外不稳健，保持禁用
   strategies:
     grid_trading:
       enabled: true
-      grid_count: 6
+      grid_count: 8
       investment_per_grid: 30
-      price_deviation: 0.016
+      price_deviation: 0.003
 
     trend_following:
       enabled: false
-      fast_ma: 7
+      fast_ma: 10
       slow_ma: 21
       stop_loss: 0.03
-      take_profit: 0.06
+      take_profit: 0.04
+      trailing_stop: 0.0
+      notional: 1000
 
   # Position management
   position:

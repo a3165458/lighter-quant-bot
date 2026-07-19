@@ -336,8 +336,13 @@ impl BacktestEngine {
             return 0.0;
         }
 
-        // 假设年化因子为 sqrt(8760)（小时数据）
-        let annualized_factor = (8760.0_f64).sqrt();
+        // 按数据实际间隔推断年化因子（每年周期数 = 一年秒数 / 平均K线间隔秒数）
+        let first_ts = self.equity_curve.first().unwrap().0;
+        let last_ts = self.equity_curve.last().unwrap().0;
+        let span_secs = (last_ts - first_ts).num_seconds().max(1) as f64;
+        let avg_interval_secs = span_secs / (self.equity_curve.len() - 1) as f64;
+        let periods_per_year = (365.25 * 86400.0) / avg_interval_secs.max(1.0);
+        let annualized_factor = periods_per_year.sqrt();
         (mean_return / std_dev) * annualized_factor
     }
 }

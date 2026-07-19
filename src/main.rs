@@ -1312,6 +1312,7 @@ async fn run_optimize(
             let slow_periods = [14, 21, 30, 50];
             let stop_losses = [0.02, 0.03, 0.05];
             let take_profits = [0.04, 0.06, 0.10];
+            let trailing_stops = [0.0, 0.015, 0.025];
             let mut sets = Vec::new();
             for &f in &fast_periods {
                 for &s in &slow_periods {
@@ -1319,7 +1320,12 @@ async fn run_optimize(
                     for &sl in &stop_losses {
                         for &tp in &take_profits {
                             if tp <= sl { continue; }
-                            sets.push(format!("fast_ma={},slow_ma={},stop_loss={},take_profit={}", f, s, sl, tp));
+                            for &tr in &trailing_stops {
+                                sets.push(format!(
+                                    "fast_ma={},slow_ma={},stop_loss={},take_profit={},trailing_stop={}",
+                                    f, s, sl, tp, tr
+                                ));
+                            }
                         }
                     }
                 }
@@ -1456,27 +1462,43 @@ async fn download_data(
         other => anyhow::bail!("Unsupported interval: {}", other),
     };
 
-    let span_secs = (end - start).num_seconds().max(secs_per_candle as i64);
-    let count_back = ((span_secs / secs_per_candle as i64) + 8) as u32;
-
     let client = lighter::client::LighterClient::new(
         "",
         "",
         "https://mainnet.zklighter.elliot.ai",
         "wss://mainnet.zklighter.elliot.ai/stream",
     );
-    let mut candles = client
-        .get_candlesticks_in_range(
-            market_id,
-            interval,
-            start.timestamp(),
-            end.timestamp(),
-            count_back,
-        )
-        .await
-        .context("Failed to download candlestick data")?;
+
+    // API 单次最多返回 500 根，按窗口分页拉取
+    const MAX_CANDLES_PER_REQ: i64 = 500;
+    let chunk_secs = secs_per_candle as i64 * MAX_CANDLES_PER_REQ;
+    let mut candles: Vec<lighter::types::Candlestick> = Vec::new();
+    let mut chunk_start = start.timestamp();
+    let end_ts = end.timestamp();
+    while chunk_start <= end_ts {
+        let chunk_end = (chunk_start + chunk_secs - secs_per_candle as i64).min(end_ts);
+        let batch = client
+            .get_candlesticks_in_range(
+                market_id,
+                interval,
+                chunk_start,
+                chunk_end,
+                MAX_CANDLES_PER_REQ as u32,
+            )
+            .await
+            .context("Failed to download candlestick data")?;
+        info!("   Chunk {} -> {}: {} candles",
+            chrono::DateTime::from_timestamp(chunk_start, 0).unwrap(),
+            chrono::DateTime::from_timestamp(chunk_end, 0).unwrap(),
+            batch.len());
+        candles.extend(batch);
+        chunk_start = chunk_end + secs_per_candle as i64;
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
 
     candles.retain(|c| c.timestamp >= start && c.timestamp <= end);
+    candles.sort_by_key(|c| c.timestamp);
+    candles.dedup_by_key(|c| c.timestamp);
     if candles.is_empty() {
         anyhow::bail!("No candles returned for {} {} {} {}", symbol, interval, start_date, end_date);
     }

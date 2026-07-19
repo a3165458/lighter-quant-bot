@@ -57,9 +57,13 @@ pub fn create_strategy(settings: &Config) -> Result<Box<dyn Strategy>> {
             .unwrap_or(0.05);
         let take_profit = settings.get_float("trading.strategies.trend_following.take_profit")
             .unwrap_or(0.1);
+        let trailing_stop = settings.get_float("trading.strategies.trend_following.trailing_stop")
+            .unwrap_or(0.0);
+        let notional = settings.get_float("trading.strategies.trend_following.notional")
+            .unwrap_or(1000.0);
 
-        Ok(Box::new(trend_strategy::TrendStrategy::new(
-            fast_ma, slow_ma, stop_loss, take_profit,
+        Ok(Box::new(trend_strategy::TrendStrategy::with_options(
+            fast_ma, slow_ma, stop_loss, take_profit, trailing_stop, notional,
         )))
     } else {
         // Default to grid strategy
@@ -93,7 +97,11 @@ pub fn create_strategy_with_params(name: &str, params: Option<&str>) -> Result<B
             let slow_ma = kv.get("slow_ma").and_then(|v| v.parse().ok()).unwrap_or(21);
             let stop_loss = kv.get("stop_loss").and_then(|v| v.parse().ok()).unwrap_or(0.03);
             let take_profit = kv.get("take_profit").and_then(|v| v.parse().ok()).unwrap_or(0.06);
-            Ok(Box::new(trend_strategy::TrendStrategy::new(fast_ma, slow_ma, stop_loss, take_profit)))
+            let trailing_stop = kv.get("trailing_stop").and_then(|v| v.parse().ok()).unwrap_or(0.0);
+            let notional = kv.get("notional").and_then(|v| v.parse().ok()).unwrap_or(1000.0);
+            Ok(Box::new(trend_strategy::TrendStrategy::with_options(
+                fast_ma, slow_ma, stop_loss, take_profit, trailing_stop, notional,
+            )))
         }
         "dca" => {
             let interval = kv.get("interval").and_then(|v| v.parse().ok()).unwrap_or(4.0);
