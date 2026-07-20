@@ -68,16 +68,15 @@ pm2 logs lighter-bot
 
 ## ⚙️ 配置说明
 
-### .env 必填字段
+### .env 必填字段（仅三项）
 
-| 变量 | 说明 | 获取方式 |
-|------|------|----------|
-| `LIGHTER_API_KEY` | API Key | Lighter.xyz → Account → API Keys |
-| `LIGHTER_SECRET_KEY` | API Secret (hex) | 创建 API Key 时获取 |
-| `LIGHTER_PRIVATE_KEY` | L1 Private Key (hex) | 钱包导出 |
-| `LIGHTER_ACCOUNT_INDEX` | 账户编号 | Lighter.xyz → Profile |
-| `LIGHTER_API_KEY_INDEX` | API Key 编号 | 创建 Key 时分配 |
-| `LIGHTER_NETWORK` | `mainnet` / `testnet` | 选择网络 |
+| 变量 | 说明 | 对应 API Key 生成弹窗字段 |
+|------|------|--------------------------|
+| `LIGHTER_SECRET_KEY` | API 私钥 (hex)，注意不是钱包 L1 私钥 | 「私钥」（弹窗关闭后无法再查看） |
+| `LIGHTER_ACCOUNT_INDEX` | 账户编号 | 「您的账户索引」 |
+| `LIGHTER_API_KEY_INDEX` | API Key 槽位编号 | 「API 密钥索引」 |
+
+「公钥」无需填写；网络选择由 `--config` 决定（主网 `settings.yaml`，Robinhood Chain `settings.robinhood.yaml`，两边账户凭据独立）。
 
 ### config/settings.yaml 关键配置
 

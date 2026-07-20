@@ -9,8 +9,8 @@ if [ -f .env ]; then
 fi
 
 # 检查必要的环境变量
-if [ -z "$LIGHTER_API_KEY" ] || [ -z "$LIGHTER_SECRET_KEY" ]; then
-    echo "❌ 错误: 请设置 LIGHTER_API_KEY 和 LIGHTER_SECRET_KEY"
+if [ -z "$LIGHTER_SECRET_KEY" ] || [ -z "$LIGHTER_ACCOUNT_INDEX" ] || [ -z "$LIGHTER_API_KEY_INDEX" ]; then
+    echo "❌ 错误: 请设置 LIGHTER_SECRET_KEY / LIGHTER_ACCOUNT_INDEX / LIGHTER_API_KEY_INDEX"
     echo "💡 请复制 .env.example 为 .env 并填入你的API密钥"
     exit 1
 fi
