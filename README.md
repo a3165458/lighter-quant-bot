@@ -1,6 +1,6 @@
 # Lighter Quant Bot 🤖
 
-基于 Rust 的 [Lighter.xyz](https://lighter.xyz) DEX 自动化量化交易机器人。
+基于 Rust 的 [Lighter.xyz](https://lighter.xyz) DEX 自动化量化交易机器人，同时支持主网与 [Robinhood Chain](https://robinhoodchain.lighter.xyz/) 实例。
 
 ## ✨ 功能
 
@@ -25,7 +25,7 @@
 
 ```bash
 # 1. 克隆项目
-git clone https://github.com/your-username/lighter-quant-bot.git
+git clone https://github.com/a3165458/lighter-quant-bot.git
 cd lighter-quant-bot
 
 # 2. 创建并编辑单一环境文件
@@ -96,11 +96,11 @@ cargo run --release -- scan \
 
 | 变量 | 说明 | 对应 API Key 生成弹窗字段 |
 |------|------|--------------------------|
-| `LIGHTER_SECRET_KEY` | API 私钥 (hex)，注意不是钱包 L1 私钥 | 「私钥」（弹窗关闭后无法再查看） |
-| `LIGHTER_ACCOUNT_INDEX` | 账户编号 | 「您的账户索引」 |
-| `LIGHTER_API_KEY_INDEX` | API Key 槽位编号 | 「API 密钥索引」 |
+| `LIGHTER_MAINNET_SECRET_KEY` / `LIGHTER_ROBINHOOD_SECRET_KEY` | 该网络的 API 私钥 (hex)，不是钱包 L1 私钥 | 「私钥」（弹窗关闭后无法再查看） |
+| `LIGHTER_MAINNET_ACCOUNT_INDEX` / `LIGHTER_ROBINHOOD_ACCOUNT_INDEX` | 该网络的账户编号 | 「您的账户索引」 |
+| `LIGHTER_MAINNET_API_KEY_INDEX` / `LIGHTER_ROBINHOOD_API_KEY_INDEX` | 该网络的 API Key 槽位 | 「API 密钥索引」 |
 
-「公钥」无需填写；网络选择由 `--config` 决定（主网 `settings.yaml`，Robinhood Chain `settings.robinhood.yaml`，两边账户凭据独立）。
+「公钥」无需填写；网络选择由 `--config` 决定（主网 `settings.yaml`，Robinhood Chain `settings.robinhood.yaml`）。两组凭据互不通用。
 
 ### config/settings.yaml 关键配置
 
@@ -185,6 +185,30 @@ cargo run --release -- scan --url https://api.rh.lighter.xyz \
 
 ## 📝 更新历史 / 回测记录
 
+### 2026-08-16
+
+- **vol_obi 双边做市（djienne 口径接到现有 RH 客户端）**
+  - 新策略 `market_making` / `mm`：实现波动半价差 + 盘口 OBI，加密标的可接 Binance USDT-M 深度作为 alpha
+  - 默认 `quote_engine=vol_obi`、`min_half_spread_bps=2`、`vol_to_half_spread=6`；`simple` 仍保留 join-BBO PMM
+  - 自动宇宙：全永续发现后按 BBO 排序、速率预算子集报价，避免全市场同时挂单打满 L1 限额
+  - 库存硬/软上限、cancel-replace 再挂、忽略空同步覆盖，减少堆单与无效撤单
+- **主网 / Robinhood 凭据隔离**
+  - 同一 `.env` 使用 `LIGHTER_MAINNET_*` 与 `LIGHTER_ROBINHOOD_*` 前缀；按 `chain_id` 选组，不再读无前缀旧变量
+  - `.env` 仍不入库，仅提交空的 `.env.example`
+- **PnL 与风控**
+  - 权益恒等式对齐已实现盈亏；单次身份缺口过大时不写入当日亏损
+  - 风控忽略一次性异常权益跳变，避免误触发紧急平仓锁死挂单
+- **Dashboard**
+  - 策略页可启用做市并下发 `quote_engine` / `alpha_source`
+  - AI Lab 量化助手补齐实盘审批与候选编号路由
+
+### 2026-08-08
+
+- **AI Lab 量化助手**
+  - 策略研究改为有界重试的 agent 流程，空候选与工具失败分开展示
+  - 明确的实盘指令必须进入人工审批，编号候选会被正确选中
+  - 趋势策略会采用交易所回报的真实持仓，避免本地状态丢仓
+
 ### 2026-07-19 (二)
 
 - **RH BTC 与主网价格同源验证 + 多窗口调参**
@@ -246,6 +270,8 @@ src/
 ├── strategy/            # 交易策略
 │   ├── grid_strategy.rs # 网格策略 + EMA 过滤
 │   ├── trend_strategy.rs# 趋势跟踪策略
+│   ├── market_making.rs # 双边做市（simple / vol_obi）
+│   ├── vol_obi.rs       # 波动半价差 + 盘口 OBI
 │   └── mod.rs           # 策略 trait 定义
 ├── dashboard/           # Web 监控面板
 │   ├── server.rs        # Axum HTTP/WS 服务
