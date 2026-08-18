@@ -21,8 +21,9 @@ mkdir -p logs
 # 复制环境变量模板
 if [ ! -f .env ]; then
     cp .env.example .env
-    echo "💡 请编辑 .env 文件填入你的 API 密钥"
 fi
+chmod 600 .env
+echo "💡 请在 .env 中分别填写 MAINNET / ROBINHOOD 前缀的 API 凭据"
 
 # 构建项目
 echo "🔨 构建项目..."
@@ -31,6 +32,6 @@ cargo build
 echo "✅ 开发环境初始化完成！"
 echo ""
 echo "下一步："
-echo "  1. 编辑 .env 文件填入 API 密钥"
+echo "  1. 编辑 .env 中对应网络前缀的凭据"
 echo "  2. 运行 cargo test 验证项目"
 echo "  3. 运行 ./scripts/run_backtest.sh 测试回测"

@@ -19,7 +19,7 @@ use tokio::time::{timeout, Duration};
 use tower_http::cors::CorsLayer;
 use tracing::{info, warn};
 
-const PNL_STATE_FILE: &str = "data/pnl_state.json";
+const PNL_STATE_FILE: &str = "pnl_state.json";
 
 /// Max fills kept in the live trade history buffer (also used by /api/pnl).
 /// Order-placement and close-event paths must share this constant — previously
@@ -48,11 +48,12 @@ pub struct PersistentPnlData {
 }
 
 impl PersistentPnlData {
-    pub fn load() -> Option<Self> {
-        let data = std::fs::read_to_string(PNL_STATE_FILE).ok()?;
+    pub fn load(network: &str) -> Option<Self> {
+        let path = super::runtime_paths::data_file(network, PNL_STATE_FILE).ok()?;
+        let data = std::fs::read_to_string(&path).ok()?;
         match serde_json::from_str(&data) {
             Ok(state) => {
-                info!("📂 Loaded PnL state from {}", PNL_STATE_FILE);
+                info!("📂 Loaded PnL state from {}", path.display());
                 Some(state)
             }
             Err(e) => {
@@ -62,12 +63,17 @@ impl PersistentPnlData {
         }
     }
 
-    pub fn save(&self) {
-        // Ensure data directory exists
-        let _ = std::fs::create_dir_all("data");
+    pub fn save(&self, network: &str) {
+        let Ok(path) = super::runtime_paths::data_file(network, PNL_STATE_FILE) else {
+            warn!("⚠️ Refusing to save PnL for invalid network {network}");
+            return;
+        };
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
         match serde_json::to_string_pretty(self) {
             Ok(json) => {
-                if let Err(e) = std::fs::write(PNL_STATE_FILE, json) {
+                if let Err(e) = std::fs::write(&path, json) {
                     warn!("⚠️ Failed to save PnL state: {}", e);
                 }
             }
@@ -76,26 +82,39 @@ impl PersistentPnlData {
     }
 }
 
-const STRATEGY_CONFIG_FILE: &str = "data/strategy_config.json";
-const RISK_CONFIG_FILE: &str = "data/risk_config.json";
+const STRATEGY_CONFIG_FILE: &str = "strategy_config.json";
+const RISK_CONFIG_FILE: &str = "risk_config.json";
 
 /// Persistent strategy configuration that survives restarts
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct PersistentStrategyConfig {
     pub strategy_name: String,
     pub strategy_params: std::collections::HashMap<String, String>,
+    #[serde(default)]
+    pub universe_mode: String,
 }
 
 impl PersistentStrategyConfig {
     pub fn save(ds: &DashboardState) {
-        let _ = std::fs::create_dir_all("data");
+        let Ok(path) = super::runtime_paths::data_file(&ds.network_name, STRATEGY_CONFIG_FILE)
+        else {
+            warn!(
+                "⚠️ Refusing to save strategy for invalid network {}",
+                ds.network_name
+            );
+            return;
+        };
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
         let config = PersistentStrategyConfig {
             strategy_name: ds.strategy_name.clone(),
             strategy_params: ds.strategy_params.clone(),
+            universe_mode: ds.universe_mode.clone(),
         };
         match serde_json::to_string_pretty(&config) {
             Ok(json) => {
-                if let Err(e) = std::fs::write(STRATEGY_CONFIG_FILE, json) {
+                if let Err(e) = std::fs::write(&path, json) {
                     warn!("⚠️ Failed to save strategy config: {}", e);
                 }
             }
@@ -103,11 +122,12 @@ impl PersistentStrategyConfig {
         }
     }
 
-    pub fn load() -> Option<Self> {
-        let data = std::fs::read_to_string(STRATEGY_CONFIG_FILE).ok()?;
+    pub fn load(network: &str) -> Option<Self> {
+        let path = super::runtime_paths::data_file(network, STRATEGY_CONFIG_FILE).ok()?;
+        let data = std::fs::read_to_string(&path).ok()?;
         match serde_json::from_str(&data) {
             Ok(config) => {
-                info!("📂 Loaded strategy config from {}", STRATEGY_CONFIG_FILE);
+                info!("📂 Loaded strategy config from {}", path.display());
                 Some(config)
             }
             Err(e) => {
@@ -127,14 +147,23 @@ pub struct PersistentRiskConfig {
 
 impl PersistentRiskConfig {
     pub fn save(ds: &DashboardState) {
-        let _ = std::fs::create_dir_all("data");
+        let Ok(path) = super::runtime_paths::data_file(&ds.network_name, RISK_CONFIG_FILE) else {
+            warn!(
+                "⚠️ Refusing to save risk config for invalid network {}",
+                ds.network_name
+            );
+            return;
+        };
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
         let config = PersistentRiskConfig {
             risk_config: ds.risk_config.clone(),
             leverage_limit: ds.leverage_limit,
         };
         match serde_json::to_string_pretty(&config) {
             Ok(json) => {
-                if let Err(e) = std::fs::write(RISK_CONFIG_FILE, json) {
+                if let Err(e) = std::fs::write(&path, json) {
                     warn!("⚠️ Failed to save risk config: {}", e);
                 }
             }
@@ -142,11 +171,12 @@ impl PersistentRiskConfig {
         }
     }
 
-    pub fn load() -> Option<Self> {
-        let data = std::fs::read_to_string(RISK_CONFIG_FILE).ok()?;
+    pub fn load(network: &str) -> Option<Self> {
+        let path = super::runtime_paths::data_file(network, RISK_CONFIG_FILE).ok()?;
+        let data = std::fs::read_to_string(&path).ok()?;
         match serde_json::from_str(&data) {
             Ok(config) => {
-                info!("📂 Loaded risk config from {}", RISK_CONFIG_FILE);
+                info!("📂 Loaded risk config from {}", path.display());
                 Some(config)
             }
             Err(e) => {
@@ -160,6 +190,11 @@ impl PersistentRiskConfig {
 /// Shared dashboard state
 #[derive(Clone, Default)]
 pub struct DashboardState {
+    /// Network used by this process. Switching profiles requires a restart.
+    pub network_name: String,
+    pub rest_url: String,
+    pub ws_url: String,
+    pub chain_id: i32,
     pub equity: f64,
     pub available_balance: f64,
     pub unrealized_pnl: f64,
@@ -185,6 +220,8 @@ pub struct DashboardState {
     // Strategy config (can be modified from dashboard)
     pub strategy_params: std::collections::HashMap<String, String>,
     pub strategy_config_changed: bool,
+    /// `explicit` (checkbox list) or `auto` (rank every discovered perp).
+    pub universe_mode: String,
     // Per-day PnL tracking (persisted)
     pub daily_pnl_map: std::collections::HashMap<String, f64>,
     // Trading controls (runtime)
@@ -221,7 +258,7 @@ impl DashboardState {
             total_volume: self.total_volume,
             total_closed_trades: self.total_closed_trades,
         };
-        persistent.save();
+        persistent.save(&self.network_name);
     }
 
     /// Restore PnL state from persistent data
@@ -329,7 +366,10 @@ pub type SharedDashboardState = Arc<RwLock<DashboardState>>;
 
 /// Start Dashboard Web server
 pub async fn start(host: &str, port: u16) -> Result<()> {
-    let state: SharedDashboardState = Arc::new(RwLock::new(DashboardState::default()));
+    let state: SharedDashboardState = Arc::new(RwLock::new(DashboardState {
+        network_name: crate::env_profiles::selected_network(),
+        ..DashboardState::default()
+    }));
     start_with_state(host, port, state).await
 }
 
@@ -355,6 +395,8 @@ pub async fn start_with_state(host: &str, port: u16, state: SharedDashboardState
         .route("/api/events", get(events_handler))
         .route("/api/env", get(env_get_handler))
         .route("/api/env", post(env_update_handler))
+        .route("/api/network", get(network_get_handler))
+        .route("/api/network", post(network_update_handler))
         .route("/api/pnl", get(pnl_handler))
         .route("/api/strategy", get(strategy_get_handler))
         .route("/api/strategy", post(strategy_update_handler))
@@ -440,6 +482,18 @@ async fn handle_ws_connection(mut socket: WebSocket, state: SharedDashboardState
                     "unrealized_pnl": ds.unrealized_pnl,
                     "available_balance": ds.available_balance,
                     "open_orders": ds.open_orders,
+                    "inception_pnl": super::pnl_accounting::inception_pnl(
+                        ds.equity,
+                        ds.initial_equity,
+                    ),
+                    "daily_pnl": super::pnl_accounting::daily_mark_to_market(
+                        ds.equity,
+                        super::pnl_accounting::start_of_day_equity(
+                            &ds.equity_history,
+                            chrono::Utc::now().timestamp(),
+                            ds.equity,
+                        ),
+                    ),
                     "daily_realized_pnl": ds.daily_realized_pnl,
                     "total_realized_pnl": ds.total_realized_pnl,
                     "total_volume": ds.total_volume,
@@ -451,6 +505,7 @@ async fn handle_ws_connection(mut socket: WebSocket, state: SharedDashboardState
                     } else { 0.0 },
                     "trading_paused": ds.trading_paused,
                     "active_markets": ds.active_markets,
+                    "universe_mode": ds.universe_mode,
                     "last_prices": ds.last_prices,
                 }
             });
@@ -530,10 +585,25 @@ async fn status_handler(State(state): State<SharedDashboardState>) -> impl IntoR
         "strategy": ds.strategy_name,
         "total_trades": ds.total_trades,
         "equity": ds.equity,
-        "total_pnl": ds.unrealized_pnl,
+        "total_pnl": super::pnl_accounting::inception_pnl(ds.equity, ds.initial_equity),
+        "inception_pnl": super::pnl_accounting::inception_pnl(ds.equity, ds.initial_equity),
+        "daily_pnl": super::pnl_accounting::daily_mark_to_market(
+            ds.equity,
+            super::pnl_accounting::start_of_day_equity(
+                &ds.equity_history,
+                chrono::Utc::now().timestamp(),
+                ds.equity,
+            ),
+        ),
         "daily_realized_pnl": ds.daily_realized_pnl,
         "total_realized_pnl": ds.total_realized_pnl,
+        "unrealized_pnl": ds.unrealized_pnl,
+        "initial_equity": ds.initial_equity,
         "last_prices": ds.last_prices,
+        "network": ds.network_name,
+        "rest_url": ds.rest_url,
+        "ws_url": ds.ws_url,
+        "chain_id": ds.chain_id,
     }))
 }
 
@@ -557,22 +627,76 @@ async fn trades_handler(State(state): State<SharedDashboardState>) -> impl IntoR
 /// GET 只回报"是否已配置 / 长度 / 后 4 位"，永远不回明文；POST 允许覆盖。
 /// 面板本身没有鉴权（见 main.rs 里写死的 "0.0.0.0"），所以把明文回给前端
 /// 等于把账户控制权挂在任何能访问该端口的人面前。
-const ENV_PUBLIC_KEYS: [&str; 4] = [
-    "LIGHTER_ACCOUNT_INDEX",
-    "LIGHTER_API_KEY_INDEX",
-    "RUST_LOG",
-    "TOKIO_WORKER_THREADS",
-];
+const ENV_CREDENTIAL_PUBLIC_KEYS: [&str; 2] = ["LIGHTER_ACCOUNT_INDEX", "LIGHTER_API_KEY_INDEX"];
+const ENV_SHARED_PUBLIC_KEYS: [&str; 2] = ["RUST_LOG", "TOKIO_WORKER_THREADS"];
 const ENV_SECRET_KEYS: [&str; 1] = ["LIGHTER_SECRET_KEY"];
 
-fn env_file_path() -> std::path::PathBuf {
+fn shared_env_file_path() -> std::path::PathBuf {
     std::path::PathBuf::from(".env")
 }
 
+fn selected_credential_env_path() -> std::path::PathBuf {
+    crate::env_profiles::credential_env_path_for_network(&crate::env_profiles::selected_network())
+        .unwrap_or_else(|_| std::path::PathBuf::from(".env"))
+}
+
+fn selected_credential_key(key: &str) -> String {
+    let suffix = key.strip_prefix("LIGHTER_").unwrap_or(key);
+    crate::env_profiles::profile_for_network(&crate::env_profiles::selected_network())
+        .unwrap_or(crate::env_profiles::CredentialProfile::Mainnet)
+        .env_key(suffix)
+}
+
+async fn network_get_handler(State(state): State<SharedDashboardState>) -> impl IntoResponse {
+    let ds = state.read().await;
+    let selected = crate::env_profiles::selected_network();
+    axum::Json(serde_json::json!({
+        "active": ds.network_name,
+        "selected": selected,
+        "rest_url": ds.rest_url,
+        "ws_url": ds.ws_url,
+        "chain_id": ds.chain_id,
+        "requires_restart": true,
+        "profiles": {
+            "mainnet": {
+                "label": "Lighter Mainnet", "quote_asset": "USDC",
+                "rest_url": "https://mainnet.zklighter.elliot.ai",
+                "ws_url": "wss://mainnet.zklighter.elliot.ai/stream", "chain_id": 304
+            },
+            "robinhood": {
+                "label": "Robinhood Chain", "quote_asset": "USDG",
+                "rest_url": "https://api.rh.lighter.xyz",
+                "ws_url": "wss://api.rh.lighter.xyz/stream", "chain_id": 466324
+            }
+        }
+    }))
+}
+
+async fn network_update_handler(
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let network = body.get("network").and_then(|v| v.as_str()).unwrap_or("");
+    if !matches!(network, "mainnet" | "robinhood") {
+        return axum::Json(serde_json::json!({
+            "status":"error", "message":"network must be mainnet or robinhood"
+        }));
+    }
+    let updates =
+        std::collections::HashMap::from([("LIGHTER_NETWORK".to_string(), network.to_string())]);
+    match write_env_keys_to(&shared_env_file_path(), &updates) {
+        Ok(()) => axum::Json(serde_json::json!({
+            "status":"ok", "network":network, "requires_restart":true
+        })),
+        Err(e) => axum::Json(serde_json::json!({"status":"error","message":e.to_string()})),
+    }
+}
+
 /// 保留注释与未知键，只替换已知键的值；文件不存在时新建。
-fn write_env_keys(updates: &std::collections::HashMap<String, String>) -> std::io::Result<()> {
-    let path = env_file_path();
-    let original = std::fs::read_to_string(&path).unwrap_or_default();
+fn write_env_keys_to(
+    path: &std::path::Path,
+    updates: &std::collections::HashMap<String, String>,
+) -> std::io::Result<()> {
+    let original = std::fs::read_to_string(path).unwrap_or_default();
     let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
     let mut out = String::new();
 
@@ -607,20 +731,52 @@ fn write_env_keys(updates: &std::collections::HashMap<String, String>) -> std::i
             out.push_str(&format!("{}={}\n", k, updates[k]));
         }
     }
-    std::fs::write(&path, out)
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .mode(0o600)
+            .open(path)?;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        file.write_all(out.as_bytes())
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, out)
+    }
 }
 
 async fn env_get_handler() -> impl IntoResponse {
+    let credential_path = selected_credential_env_path();
+    let shared_path = shared_env_file_path();
     let mut public = serde_json::Map::new();
-    for key in ENV_PUBLIC_KEYS {
+    for key in ENV_CREDENTIAL_PUBLIC_KEYS {
+        let stored_key = selected_credential_key(key);
         public.insert(
             key.to_string(),
-            serde_json::json!(std::env::var(key).unwrap_or_default()),
+            serde_json::json!(
+                crate::env_profiles::read_env_value(&credential_path, &stored_key)
+                    .unwrap_or_default()
+            ),
+        );
+    }
+    for key in ENV_SHARED_PUBLIC_KEYS {
+        public.insert(
+            key.to_string(),
+            serde_json::json!(
+                crate::env_profiles::read_env_value(&shared_path, key).unwrap_or_default()
+            ),
         );
     }
     let mut secrets = serde_json::Map::new();
     for key in ENV_SECRET_KEYS {
-        let val = std::env::var(key).unwrap_or_default();
+        let stored_key = selected_credential_key(key);
+        let val =
+            crate::env_profiles::read_env_value(&credential_path, &stored_key).unwrap_or_default();
         secrets.insert(
             key.to_string(),
             serde_json::json!({
@@ -634,7 +790,7 @@ async fn env_get_handler() -> impl IntoResponse {
     axum::Json(serde_json::json!({
         "public": public,
         "secrets": secrets,
-        "env_path": env_file_path().to_string_lossy(),
+        "env_path": credential_path.to_string_lossy(),
         // 环境变量在进程启动时读入，改完必须重启才会生效
         "requires_restart": true,
     }))
@@ -649,8 +805,9 @@ async fn env_update_handler(axum::Json(body): axum::Json<serde_json::Value>) -> 
     let mut updates = std::collections::HashMap::new();
     let mut rejected = Vec::new();
     for (k, v) in obj {
-        let allowed =
-            ENV_PUBLIC_KEYS.contains(&k.as_str()) || ENV_SECRET_KEYS.contains(&k.as_str());
+        let allowed = ENV_CREDENTIAL_PUBLIC_KEYS.contains(&k.as_str())
+            || ENV_SHARED_PUBLIC_KEYS.contains(&k.as_str())
+            || ENV_SECRET_KEYS.contains(&k.as_str());
         if !allowed {
             rejected.push(k.clone());
             continue;
@@ -666,16 +823,43 @@ async fn env_update_handler(axum::Json(body): axum::Json<serde_json::Value>) -> 
         return axum::Json(serde_json::json!({
             "status":"error","message":"no writable keys in request","rejected":rejected}));
     }
-    match write_env_keys(&updates) {
+    let credential_updates: std::collections::HashMap<_, _> = updates
+        .iter()
+        .filter(|(key, _)| {
+            ENV_CREDENTIAL_PUBLIC_KEYS.contains(&key.as_str())
+                || ENV_SECRET_KEYS.contains(&key.as_str())
+        })
+        .map(|(key, value)| (selected_credential_key(key), value.clone()))
+        .collect();
+    let shared_updates: std::collections::HashMap<_, _> = updates
+        .iter()
+        .filter(|(key, _)| ENV_SHARED_PUBLIC_KEYS.contains(&key.as_str()))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    let credential_path = selected_credential_env_path();
+    let write_result = if !credential_updates.is_empty() {
+        write_env_keys_to(&credential_path, &credential_updates)
+    } else {
+        Ok(())
+    }
+    .and_then(|()| {
+        if shared_updates.is_empty() {
+            Ok(())
+        } else {
+            write_env_keys_to(&shared_env_file_path(), &shared_updates)
+        }
+    });
+    match write_result {
         Ok(()) => {
             let keys: Vec<_> = updates.keys().cloned().collect();
-            info!("环境变量已写入 .env: {:?}（重启后生效）", keys);
+            info!("环境变量已写入网络隔离配置: {:?}（重启后生效）", keys);
             axum::Json(serde_json::json!({
                 "status":"ok",
                 "updated": keys,
                 "rejected": rejected,
                 "requires_restart": true,
-                "message":"Saved to .env. Restart the bot for changes to take effect."
+                "env_path": credential_path.to_string_lossy(),
+                "message":"Saved to the selected network profile. Restart the bot for changes to take effect."
             }))
         }
         Err(e) => axum::Json(serde_json::json!({"status":"error","message":e.to_string()})),
@@ -707,6 +891,15 @@ async fn pnl_handler(State(state): State<SharedDashboardState>) -> impl IntoResp
     axum::Json(serde_json::json!({
         "daily_realized_pnl": ds.daily_realized_pnl,
         "total_realized_pnl": ds.total_realized_pnl,
+        "inception_pnl": super::pnl_accounting::inception_pnl(ds.equity, ds.initial_equity),
+        "daily_pnl": super::pnl_accounting::daily_mark_to_market(
+            ds.equity,
+            super::pnl_accounting::start_of_day_equity(
+                &ds.equity_history,
+                chrono::Utc::now().timestamp(),
+                ds.equity,
+            ),
+        ),
         "unrealized_pnl": ds.unrealized_pnl,
         "equity": ds.equity,
         "initial_equity": ds.initial_equity,
@@ -857,7 +1050,7 @@ async fn agent_proposal_handler(
         approval_phrase,
     };
     ds.quant_agent.record(proposal.clone());
-    if let Err(error) = ds.quant_agent.save() {
+    if let Err(error) = ds.quant_agent.save(&ds.network_name) {
         warn!("Failed to persist Quant Agent audit: {}", error);
     }
     axum::Json(serde_json::json!({"status":"ok", "proposal": proposal}))
@@ -896,7 +1089,7 @@ async fn agent_apply_handler(
     if !current_decision.allowed {
         ds.quant_agent.proposals[index].status = "blocked_at_apply".to_string();
         ds.quant_agent.proposals[index].decision = current_decision.clone();
-        let _ = ds.quant_agent.save();
+        let _ = ds.quant_agent.save(&ds.network_name);
         return axum::Json(serde_json::json!({
             "status":"error", "message":"current policy blocked apply", "decision":current_decision
         }));
@@ -905,6 +1098,7 @@ async fn agent_apply_handler(
     ds.strategy_name = match proposal.input.strategy.as_str() {
         "grid" => "grid_trading",
         "trend" => "trend_following",
+        "mm" => "market_making",
         other => other,
     }
     .to_string();
@@ -923,7 +1117,7 @@ async fn agent_apply_handler(
     ds.strategy_config_changed = true;
     ds.quant_agent.proposals[index].status = "applied".to_string();
     PersistentStrategyConfig::save(&ds);
-    if let Err(error) = ds.quant_agent.save() {
+    if let Err(error) = ds.quant_agent.save(&ds.network_name) {
         warn!("Failed to persist Quant Agent apply audit: {}", error);
     }
     info!(
@@ -1344,6 +1538,21 @@ fn build_param_grid(strategy: &str, mode: &str, capital: f64) -> Result<Vec<Stri
             }
             Ok(sets)
         }
+        "mm" | "market_making" => {
+            let spreads = [0.0005, 0.001, 0.002];
+            let notionals = [20.0, 40.0];
+            let mut sets = Vec::new();
+            for &bid in &spreads {
+                for &ask in &spreads {
+                    for &n in &notionals {
+                        sets.push(format!(
+                            "bid_spread={bid},ask_spread={ask},order_notional={n}"
+                        ));
+                    }
+                }
+            }
+            Ok(sets)
+        }
         other => anyhow::bail!("Unsupported strategy for optimize: {other}"),
     }
 }
@@ -1733,6 +1942,7 @@ async fn markets_get_handler(
             serde_json::json!({ "id": id, "symbol": sym, "active": ds.active_markets.contains(id) })
         }).collect::<Vec<_>>(),
         "trading_paused": ds.trading_paused,
+        "universe_mode": ds.universe_mode,
     }))
 }
 
@@ -1741,6 +1951,18 @@ async fn markets_update_handler(
     axum::Json(body): axum::Json<serde_json::Value>,
 ) -> axum::Json<serde_json::Value> {
     let mut ds = state.write().await;
+    if let Some(mode) = body.get("universe_mode").and_then(|v| v.as_str()) {
+        let mode = mode.trim().to_ascii_lowercase();
+        if mode == "auto" || mode == "all" || mode == "explicit" {
+            ds.universe_mode = if mode == "all" {
+                "auto".to_string()
+            } else {
+                mode
+            };
+            PersistentStrategyConfig::save(&ds);
+            info!("🎯 Universe mode updated: {}", ds.universe_mode);
+        }
+    }
     if let Some(markets) = body.get("markets").and_then(|v| v.as_array()) {
         let new_markets: Vec<u32> = markets
             .iter()
@@ -1750,13 +1972,24 @@ async fn markets_update_handler(
         ds.active_markets = new_markets.clone();
         axum::Json(serde_json::json!({
             "status": "ok",
-            "message": format!("Active markets updated to {:?}", new_markets),
+            "message": format!(
+                "Active markets updated to {:?}, universe={}",
+                new_markets, ds.universe_mode
+            ),
             "active_markets": new_markets,
+            "universe_mode": ds.universe_mode,
+        }))
+    } else if body.get("universe_mode").is_some() {
+        axum::Json(serde_json::json!({
+            "status": "ok",
+            "message": format!("Universe mode set to {}", ds.universe_mode),
+            "active_markets": ds.active_markets,
+            "universe_mode": ds.universe_mode,
         }))
     } else {
         axum::Json(serde_json::json!({
             "status": "error",
-            "message": "Invalid request. Expected: {\"markets\": [0, 1]}"
+            "message": "Invalid request. Expected: {\"markets\": [0, 1]} or {\"universe_mode\":\"auto\"}"
         }))
     }
 }

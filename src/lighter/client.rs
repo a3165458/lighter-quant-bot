@@ -633,12 +633,17 @@ impl LighterClient {
         price: f64,
         quantity: f64,
     ) -> Result<PlaceOrderResponse, LighterError> {
-        self.place_order_with_market(0, side, price, quantity, None)
+        self.place_order_with_market(0, side, price, quantity, None, false)
             .await
     }
 
     /// Place an order for a specific market with optional MarketInfo.
     /// Automatically enforces minimum base/quote amounts.
+    ///
+    /// `reduce_only=true` 时（平仓/止损/紧急平仓路径）：跳过 min_base / min_quote 的
+    /// 向上抬量 —— 抬量会把减仓单数量夸大成远超实际持仓的名义额（2026-08-08 事故：
+    /// 0.000010 的离场单被抬到 0.000174，配合交易所 ReduceOnly=0 会反向开出 17 倍的
+    /// 仓位）。减仓单按原量发出，交易所侧 reduceOnly 标志保证只减不增。
     pub async fn place_order_with_market(
         &self,
         market_id: u32,
@@ -646,6 +651,7 @@ impl LighterClient {
         price: f64,
         quantity: f64,
         market_info: Option<&MarketInfo>,
+        reduce_only: bool,
     ) -> Result<PlaceOrderResponse, LighterError> {
         let (size_dec, price_dec, min_base, min_quote) = match market_info {
             Some(mi) => (
@@ -661,22 +667,26 @@ impl LighterClient {
             },
         };
 
-        // Enforce minimum quantity: must meet both min_base and min_quote
+        // Enforce minimum quantity: must meet both min_base and min_quote.
+        // Reduce-only orders skip both bumps — 减仓单必须按实际持仓量发出，
+        // 抬量会让交易所侧看到超过持仓的名义额订单（见上方 docstring 事故说明）。
         let mut qty = quantity;
-        if qty < min_base {
-            info!(
-                "Adjusting qty from {:.6} to min_base {:.6} for market {}",
-                qty, min_base, market_id
-            );
-            qty = min_base;
-        }
-        let quote_value = qty * price;
-        if quote_value < min_quote && price > 0.0 {
-            qty = min_quote / price * 1.02; // 2% buffer for rounding
-            info!(
-                "Adjusting qty to {:.6} to meet min_quote ${:.2} for market {}",
-                qty, min_quote, market_id
-            );
+        if !reduce_only {
+            if qty < min_base {
+                info!(
+                    "Adjusting qty from {:.6} to min_base {:.6} for market {}",
+                    qty, min_base, market_id
+                );
+                qty = min_base;
+            }
+            let quote_value = qty * price;
+            if quote_value < min_quote && price > 0.0 {
+                qty = min_quote / price * 1.02; // 2% buffer for rounding
+                info!(
+                    "Adjusting qty to {:.6} to meet min_quote ${:.2} for market {}",
+                    qty, min_quote, market_id
+                );
+            }
         }
 
         let size_multiplier = 10_f64.powi(size_dec as i32);
@@ -684,26 +694,33 @@ impl LighterClient {
         let mut base_amount = (qty * size_multiplier).round() as i64;
         let price_int = (price * price_multiplier).round() as i32;
 
-        // Post-rounding check: ensure integer base_amount * price meets min_quote
-        let actual_quote = (base_amount as f64 / size_multiplier) * price;
-        if actual_quote < min_quote && price > 0.0 {
-            // Compute minimum base_amount that meets min_quote
-            let min_base_for_quote = (min_quote / price * size_multiplier).ceil() as i64 + 1;
-            info!(
-                "Post-rounding fix: base_amount {} -> {} to meet min_quote ${:.2}",
-                base_amount, min_base_for_quote, min_quote
-            );
-            base_amount = min_base_for_quote;
-        }
+        // Post-rounding checks raise base_amount to meet min_quote / min_base.
+        // These must never apply to reduce-only orders: rounding up a close
+        // order would emit a nominal amount larger than the position being
+        // closed (2026-08-08 incident: 0.000010 exit became 0.000174, 17x,
+        // which with ReduceOnly=0 would have reversed the position).
+        if !reduce_only {
+            // Post-rounding check: ensure integer base_amount * price meets min_quote
+            let actual_quote = (base_amount as f64 / size_multiplier) * price;
+            if actual_quote < min_quote && price > 0.0 {
+                // Compute minimum base_amount that meets min_quote
+                let min_base_for_quote = (min_quote / price * size_multiplier).ceil() as i64 + 1;
+                info!(
+                    "Post-rounding fix: base_amount {} -> {} to meet min_quote ${:.2}",
+                    base_amount, min_base_for_quote, min_quote
+                );
+                base_amount = min_base_for_quote;
+            }
 
-        // Also ensure base_amount meets min_base in integer form
-        let min_base_int = (min_base * size_multiplier).ceil() as i64;
-        if base_amount < min_base_int {
-            info!(
-                "Post-rounding fix: base_amount {} -> min_base_int {}",
-                base_amount, min_base_int
-            );
-            base_amount = min_base_int;
+            // Also ensure base_amount meets min_base in integer form
+            let min_base_int = (min_base * size_multiplier).ceil() as i64;
+            if base_amount < min_base_int {
+                info!(
+                    "Post-rounding fix: base_amount {} -> min_base_int {}",
+                    base_amount, min_base_int
+                );
+                base_amount = min_base_int;
+            }
         }
 
         let is_ask = matches!(side, Side::Sell);
@@ -722,6 +739,7 @@ impl LighterClient {
             0, // Limit
             1, // GoodTillTime
             nonce,
+            reduce_only,
         )?;
 
         match self.send_tx(tx_type, &tx_info).await {

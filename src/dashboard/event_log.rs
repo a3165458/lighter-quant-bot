@@ -9,7 +9,7 @@ use tokio::task::JoinHandle;
 use tokio::time::{Duration, MissedTickBehavior};
 use tracing::{info, warn};
 
-pub const EVENT_HISTORY_FILE: &str = "data/dashboard_events.json";
+pub const EVENT_HISTORY_FILE: &str = "dashboard_events.json";
 pub const EVENT_HISTORY_LIMIT: usize = 200;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -316,9 +316,15 @@ fn event_from_trade(trade: &Value, fallback_ms: i64) -> DashboardEvent {
 }
 
 pub async fn restore_event_history(state: &super::server::SharedDashboardState) {
-    let path = Path::new(EVENT_HISTORY_FILE);
-    let mut log = EventLog::load_or_default(path);
-    let trades = state.read().await.trade_history.clone();
+    let (network, trades) = {
+        let ds = state.read().await;
+        (ds.network_name.clone(), ds.trade_history.clone())
+    };
+    let Ok(path) = super::runtime_paths::data_file(&network, EVENT_HISTORY_FILE) else {
+        warn!("⚠️ Invalid network for dashboard event history: {network}");
+        return;
+    };
+    let mut log = EventLog::load_or_default(&path);
     let reconciled = reconcile_events_from_trades(&mut log, &trades);
 
     {
@@ -327,19 +333,24 @@ pub async fn restore_event_history(state: &super::server::SharedDashboardState) 
     }
 
     if reconciled {
-        if let Err(error) = log.save_to(path) {
+        if let Err(error) = log.save_to(&path) {
             warn!("⚠️ Failed to seed dashboard event history: {error}");
         }
     }
     info!(
         "📂 Restored {} dashboard events from {}",
         log.events().len(),
-        EVENT_HISTORY_FILE
+        path.display()
     );
 }
 
 pub fn spawn_event_monitor(state: super::server::SharedDashboardState) -> JoinHandle<()> {
     tokio::spawn(async move {
+        let network = state.read().await.network_name.clone();
+        let Ok(path) = super::runtime_paths::data_file(&network, EVENT_HISTORY_FILE) else {
+            warn!("⚠️ Invalid network for dashboard event monitor: {network}");
+            return;
+        };
         let mut tracker = EventTracker::default();
         let baseline = snapshot_from_state(&state).await;
         tracker.observe(&baseline, chrono::Utc::now().timestamp_millis());
@@ -364,10 +375,10 @@ pub fn spawn_event_monitor(state: super::server::SharedDashboardState) -> JoinHa
                 log
             };
 
-            if let Err(error) =
-                tokio::task::spawn_blocking(move || log.save_to(Path::new(EVENT_HISTORY_FILE)))
-                    .await
-                    .unwrap_or_else(|error| Err(anyhow::anyhow!(error)))
+            let save_path = path.clone();
+            if let Err(error) = tokio::task::spawn_blocking(move || log.save_to(&save_path))
+                .await
+                .unwrap_or_else(|error| Err(anyhow::anyhow!(error)))
             {
                 warn!("⚠️ Failed to persist dashboard event history: {error}");
             }

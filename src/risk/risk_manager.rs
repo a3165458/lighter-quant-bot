@@ -101,6 +101,21 @@ impl RiskManager {
     /// 更新当前权益
     #[allow(dead_code)]
     pub fn update_equity(&mut self, equity: f64) {
+        if !equity.is_finite() || equity <= 0.0 {
+            return;
+        }
+        // One-shot account glitches (vanished books, 429 partial payloads)
+        // must not rewrite the DD baseline or trip emergency.
+        if self.current_equity > 1.0
+            && (self.initial_equity - 10_000.0).abs() >= 1.0
+            && (self.current_equity - equity).abs() / self.current_equity > 0.08
+        {
+            warn!(
+                "Ignoring implausible equity jump {:.2} → {:.2}",
+                self.current_equity, equity
+            );
+            return;
+        }
         self.current_equity = equity;
         // If initial_equity was never set from real data, sync it
         if (self.initial_equity - 10000.0).abs() < 1.0 {

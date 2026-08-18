@@ -51,4 +51,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -sf http://localhost:2028/api/status || exit 1
 
 # Default command: live trading
-CMD ["lighter-bot", "live", "--config", "config/settings.yaml"]
+CMD ["lighter-bot", "live"]

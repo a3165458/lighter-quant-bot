@@ -2,6 +2,7 @@
 mod backtest;
 mod dashboard;
 mod data;
+mod env_profiles;
 mod hft;
 mod lighter;
 mod risk;
@@ -31,8 +32,9 @@ struct Cli {
 enum Commands {
     /// Run live trading
     Live {
-        #[arg(short, long, default_value = "config/settings.yaml")]
-        config: String,
+        /// Config file. When omitted, LIGHTER_NETWORK selects mainnet or Robinhood Chain.
+        #[arg(short, long)]
+        config: Option<String>,
     },
 
     /// Run backtest
@@ -127,13 +129,16 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    env_profiles::load_shared_env()?;
     utils::logger::init_logger();
-    dotenv::dotenv().ok();
 
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Live { config } => run_live_trading(&config).await,
+        Commands::Live { config } => {
+            let config = config.unwrap_or_else(default_live_config_path);
+            run_live_trading(&config).await
+        }
         Commands::Backtest {
             strategy,
             data,
@@ -198,6 +203,48 @@ async fn main() -> Result<()> {
     }
 }
 
+fn default_live_config_path() -> String {
+    match env_profiles::selected_network().as_str() {
+        "robinhood" => "config/settings.robinhood.yaml".to_string(),
+        _ => "config/settings.yaml".to_string(),
+    }
+}
+
+fn universe_mode(settings: &Config) -> String {
+    settings
+        .get_string("trading.universe.mode")
+        .unwrap_or_else(|_| "explicit".to_string())
+        .trim()
+        .to_ascii_lowercase()
+}
+
+fn universe_select_params(settings: &Config) -> hft::UniverseSelectParams {
+    hft::UniverseSelectParams {
+        max_spread_bps: settings
+            .get_float("trading.universe.max_spread_bps")
+            .unwrap_or(25.0),
+        min_spread_bps: settings
+            .get_float("trading.universe.min_spread_bps")
+            .unwrap_or(0.0),
+        min_size: settings
+            .get_float("trading.universe.min_size")
+            .unwrap_or(0.01),
+        prefer_wider_spreads: settings
+            .get_bool("trading.universe.prefer_wider_spreads")
+            .unwrap_or(false),
+        refresh_interval: std::time::Duration::from_secs(
+            settings
+                .get_int("trading.universe.refresh_interval_secs")
+                .unwrap_or(15)
+                .max(1) as u64,
+        ),
+        actions_per_refresh: settings
+            .get_int("trading.universe.actions_per_refresh")
+            .unwrap_or(3)
+            .max(1) as u32,
+    }
+}
+
 async fn run_live_trading(config_path: &str) -> Result<()> {
     info!("🚀 Starting Lighter Trading Bot");
 
@@ -208,15 +255,23 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
         .build()
         .context("Failed to load config")?;
 
+    let chain_id = settings.get_int("lighter.chain_id").unwrap_or(304);
+    let credential_profile = env_profiles::profile_for_chain_id(chain_id)?;
+    let (credentials, credential_path) = env_profiles::load_credentials(credential_profile)?;
+    info!(
+        "🔐 Using {} credential profile from {}",
+        credential_profile.network_name(),
+        credential_path.display()
+    );
+
     // Load credentials from env
-    let secret_key =
-        std::env::var("LIGHTER_SECRET_KEY").context("LIGHTER_SECRET_KEY not set in .env")?;
-    let account_index: i64 = std::env::var("LIGHTER_ACCOUNT_INDEX")
-        .context("LIGHTER_ACCOUNT_INDEX not set in .env")?
+    let secret_key = credentials.secret_key;
+    let account_index: i64 = credentials
+        .account_index
         .parse()
         .context("Invalid LIGHTER_ACCOUNT_INDEX")?;
-    let api_key_index: i32 = std::env::var("LIGHTER_API_KEY_INDEX")
-        .context("LIGHTER_API_KEY_INDEX not set in .env")?
+    let api_key_index: i32 = credentials
+        .api_key_index
         .parse()
         .context("Invalid LIGHTER_API_KEY_INDEX")?;
 
@@ -226,7 +281,7 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
     let ws_url = settings
         .get_string("lighter.ws_url")
         .unwrap_or_else(|_| "wss://mainnet.zklighter.elliot.ai/stream".to_string());
-    let chain_id = settings.get_int("lighter.chain_id").unwrap_or(304) as i32;
+    let chain_id = chain_id as i32;
 
     let max_open_orders = settings.get_int("trading.max_open_orders").unwrap_or(8) as u32;
     info!("⚙️ Max open orders: {}", max_open_orders);
@@ -260,12 +315,27 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
         .context("Failed to fetch nonce")?;
     info!("📋 Initial nonce: {}", nonce);
 
-    // Fetch account info
+    // Fetch account info (retry — a crash-loop can 429 the account endpoint)
     info!("📡 Fetching account info...");
-    let account = lighter_client
-        .get_account_info()
-        .await
-        .context("Failed to fetch account info")?;
+    let account = {
+        let mut last_err = None;
+        let mut fetched = None;
+        for attempt in 1..=6 {
+            match lighter_client.get_account_info().await {
+                Ok(acct) => {
+                    fetched = Some(acct);
+                    break;
+                }
+                Err(e) => {
+                    warn!("account info attempt {attempt}/6 failed: {e}");
+                    last_err = Some(e);
+                    tokio::time::sleep(std::time::Duration::from_secs(2 * attempt as u64)).await;
+                }
+            }
+        }
+        fetched.ok_or_else(|| last_err.unwrap())
+    }
+    .context("Failed to fetch account info")?;
     let equity = account.total_equity;
     let free_balance = account.balances.first().map(|b| b.free).unwrap_or(0.0);
     info!(
@@ -288,7 +358,7 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
     let markets: Vec<i64> = settings
         .get("trading.markets")
         .unwrap_or_else(|_| vec![0, 1]);
-    let market_ids: Vec<u32> = markets.iter().map(|m| *m as u32).collect();
+    let configured_market_ids: Vec<u32> = markets.iter().map(|m| *m as u32).collect();
 
     // Fetch full market list and register symbol map (supports Robinhood Chain instance
     // with stock perps/spot markets — no hardcoded ETH/BTC assumptions)
@@ -311,7 +381,38 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
             Vec::new()
         }
     };
-    lighter_client.set_active_markets(market_ids.clone());
+    let uni_mode = universe_mode(&settings);
+    let uni_params = universe_select_params(&settings);
+    let live_universe = hft::resolve_live_universe(
+        &uni_mode,
+        &configured_market_ids,
+        &all_markets,
+        &[],
+        &uni_params,
+    );
+    if live_universe.awaiting_books {
+        info!(
+            "🎯 Auto universe: observing {} perp(s); quoting waits for live BBO rank/filter",
+            live_universe.subscribe_ids.len()
+        );
+    } else {
+        info!(
+            "🎯 Quoting universe: {} market(s) {:?}",
+            live_universe.quoting_ids.len(),
+            live_universe.quoting_ids
+        );
+    }
+    let observe_ids = live_universe.subscribe_ids.clone();
+    let mut quote_ids = live_universe.quoting_ids.clone();
+    // Fetch metadata for every observed perp (catalog already has it).
+    // Trading is gated on quote_ids / active_markets, which stay empty
+    // until live BBO has been ranked.
+    let market_ids = if quote_ids.is_empty() {
+        observe_ids.clone()
+    } else {
+        quote_ids.clone()
+    };
+    lighter_client.set_active_markets(quote_ids.clone());
     // symbol -> MarketInfo for dynamic decimals / min-amount lookups
     let market_registry: std::collections::HashMap<String, lighter::types::MarketInfo> =
         all_markets
@@ -319,9 +420,15 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
             .map(|m| (m.symbol.clone(), m.clone()))
             .collect();
 
-    // Fetch market info
+    // Fetch market info (catalog first so auto-universe does not REST-walk every perp)
     let mut market_infos = std::collections::HashMap::new();
-    for &mid in &market_ids {
+    for market in &all_markets {
+        market_infos.insert(market.market_id, market.clone());
+    }
+    for &mid in &quote_ids {
+        if market_infos.contains_key(&mid) {
+            continue;
+        }
         match lighter_client.get_market_info(mid).await {
             Ok(mi) => {
                 info!(
@@ -340,7 +447,17 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
     let open_orders_count = Arc::new(std::sync::atomic::AtomicU32::new(0));
 
     // Setup shared dashboard state
+    let network_name = if chain_id == 466324 {
+        "robinhood"
+    } else {
+        "mainnet"
+    }
+    .to_string();
     let dash_state = Arc::new(RwLock::new(dashboard::server::DashboardState {
+        network_name: network_name.clone(),
+        rest_url: rest_url.clone(),
+        ws_url: ws_url.clone(),
+        chain_id,
         equity,
         available_balance: free_balance,
         unrealized_pnl: account.positions.iter().map(|p| p.unrealized_pnl).sum(),
@@ -407,8 +524,9 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
             m
         },
         strategy_config_changed: false,
+        universe_mode: uni_mode.clone(),
         daily_pnl_map: std::collections::HashMap::new(),
-        active_markets: market_ids.clone(),
+        active_markets: quote_ids.clone(),
         trading_paused: false,
         cancel_all_requested: false,
         available_markets: {
@@ -434,17 +552,17 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
         risk_update_requested: None,
         leverage_limit: 3.0,
         last_prices: std::collections::HashMap::new(),
-        quant_agent: dashboard::quant_agent::AgentLedger::load(),
+        quant_agent: dashboard::quant_agent::AgentLedger::load(&network_name),
     }));
 
     // Restore persistent PnL data from disk
-    if let Some(persisted) = dashboard::server::PersistentPnlData::load() {
+    if let Some(persisted) = dashboard::server::PersistentPnlData::load(&network_name) {
         let mut ds = dash_state.write().await;
         ds.restore_pnl(&persisted);
     }
 
     // Restore persistent strategy config from disk
-    if let Some(saved) = dashboard::server::PersistentStrategyConfig::load() {
+    if let Some(saved) = dashboard::server::PersistentStrategyConfig::load(&network_name) {
         let mut ds = dash_state.write().await;
         info!(
             "📂 Loaded strategy config: {} params={:?}",
@@ -452,10 +570,13 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
         );
         ds.strategy_name = saved.strategy_name;
         ds.strategy_params = saved.strategy_params;
+        if !saved.universe_mode.trim().is_empty() {
+            ds.universe_mode = saved.universe_mode;
+        }
     }
 
     // Restore persistent risk config from disk
-    if let Some(saved) = dashboard::server::PersistentRiskConfig::load() {
+    if let Some(saved) = dashboard::server::PersistentRiskConfig::load(&network_name) {
         let mut ds = dash_state.write().await;
         info!(
             "📂 Loaded risk config: leverage_limit={}",
@@ -554,8 +675,9 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
     // Create data store
     let data_store = Arc::new(RwLock::new(data::storage::MarketDataStore::new()));
 
-    // Fetch initial candle data for strategies that need history
-    for &mid in &market_ids {
+    // Fetch initial candle data for strategies that need history.
+    // Auto universe waits for BBO ranking before it has a quoting set.
+    for &mid in &quote_ids {
         let symbol = market_infos
             .get(&mid)
             .map(|m| m.symbol.as_str())
@@ -577,21 +699,71 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
     // Flag to pause order placement during auto-reset (prevents nonce race)
     let grid_resetting = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
+    let latest_bbos: Arc<std::sync::Mutex<std::collections::HashMap<u32, hft::BboUpdate>>> =
+        Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+
     // Connect WebSocket
     info!("🔌 Connecting WebSocket...");
     let ws_client = lighter::websocket::LighterWebSocket::new(&ws_url);
     ws_client.connect().await?;
 
-    // Subscribe to market data for actively traded markets only
+    // Auto universe: ticker-subscribe every discovered perp (sharded) so BBO
+    // can rank the quoting set. Explicit mode keeps full market-data subs.
     let mut subscribed = std::collections::HashSet::new();
-    for &mid in &market_ids {
-        let symbol = market_infos
-            .get(&mid)
-            .map(|m| m.symbol.as_str())
-            .unwrap_or("?");
-        ws_client.subscribe_market_data(&mid.to_string()).await?;
-        subscribed.insert(mid);
-        info!("📡 Subscribed to {} (market {})", symbol, mid);
+    let auto_universe = uni_mode == "auto" || uni_mode == "all";
+    if auto_universe {
+        let shards = hft::plan_subscription_shards(&observe_ids, 100)?;
+        for (shard_index, shard) in shards.iter().enumerate() {
+            if shard_index == 0 {
+                for &mid in shard {
+                    ws_client.subscribe_ticker(mid).await?;
+                    subscribed.insert(mid);
+                    tokio::time::sleep(std::time::Duration::from_millis(310)).await;
+                }
+            } else {
+                let shard = shard.clone();
+                let store = data_store.clone();
+                let bbos = latest_bbos.clone();
+                let url = ws_url.clone();
+                tokio::spawn(async move {
+                    let conn = lighter::websocket::LighterWebSocket::new(&url);
+                    if let Err(error) = conn.connect().await {
+                        warn!(shard = shard_index, %error, "Auto-universe ticker shard failed to connect");
+                        return;
+                    }
+                    let mut receiver = conn.get_receiver();
+                    for mid in &shard {
+                        if let Err(error) = conn.subscribe_ticker(*mid).await {
+                            warn!(shard = shard_index, market = mid, %error, "Ticker subscribe failed");
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(310)).await;
+                    }
+                    while let Ok(message) = receiver.recv().await {
+                        if let lighter::types::WsMessage::BboUpdate(bbo) = message {
+                            store
+                                .write()
+                                .await
+                                .update_order_book(hft::order_book_from_bbo(&bbo));
+                            bbos.lock().unwrap().insert(bbo.market_id, bbo);
+                        }
+                    }
+                });
+            }
+        }
+        info!(
+            "📡 Auto universe: ticker-subscribed {} perp(s) for BBO ranking",
+            subscribed.len()
+        );
+    } else {
+        for &mid in &market_ids {
+            let symbol = market_infos
+                .get(&mid)
+                .map(|m| m.symbol.as_str())
+                .unwrap_or("?");
+            ws_client.subscribe_market_data(&mid.to_string()).await?;
+            subscribed.insert(mid);
+            info!("📡 Subscribed to {} (market {})", symbol, mid);
+        }
     }
 
     // Start the main trading loop
@@ -610,6 +782,7 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
     let grid_resetting_refresh = grid_resetting.clone();
     let stale_price_pct = 0.012_f64; // Cancel orders >1.2% from mid price
     let max_order_age_secs = 300_u64; // Force cancel-all after 5 minutes if stale
+    let resolver_configured_ids = configured_market_ids.clone();
     let configured_market_ids = market_ids.clone();
     let registry_refresh = market_registry.clone();
     tokio::spawn(async move {
@@ -654,10 +827,22 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
             match client_for_refresh.get_open_orders("all").await {
                 Ok(orders) => {
                     let count = orders.len() as u32;
-                    let prev =
-                        open_orders_refresh.swap(count, std::sync::atomic::Ordering::Relaxed);
-                    if prev != count {
-                        info!("📋 Open orders synced: {} → {} (real)", prev, count);
+                    let prev = open_orders_refresh.load(std::sync::atomic::Ordering::Relaxed);
+                    // A 0-result (or huge drop) while we still think orders are
+                    // live is usually an incomplete accountActiveOrders page.
+                    // Trusting it resets the gate and lets MM stack hundreds of quotes.
+                    let trusted = if count == 0 && prev > 0 {
+                        warn!(
+                            prev,
+                            "Ignoring open-order sync of 0 while local count is {prev}"
+                        );
+                        prev
+                    } else {
+                        count
+                    };
+                    open_orders_refresh.store(trusted, std::sync::atomic::Ordering::Relaxed);
+                    if prev != trusted {
+                        info!("📋 Open orders synced: {} → {} (real)", prev, trusted);
                     }
                     let mut ds = dash_state_refresh.write().await;
                     ds.open_orders = count;
@@ -952,6 +1137,7 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
                                     close_price,
                                     pos.size.abs(),
                                     mi,
+                                    true,
                                 )
                                 .await
                             {
@@ -1042,7 +1228,29 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
                         if !position_reductions.is_empty() {
                             let equity_change = curr_equity - prev_equity;
                             let unrealized_change = curr_unrealized - prev_unrealized;
-                            realized_pnl_this_cycle = equity_change - unrealized_change;
+                            let closed_notional: f64 = position_reductions
+                                .iter()
+                                .map(|(_, _, size, entry, _)| size * entry)
+                                .sum();
+                            let all_vanished = curr_pos_map.is_empty() && !prev_positions.is_empty();
+                            match dashboard::pnl_accounting::realized_from_position_reductions(
+                                equity_change,
+                                unrealized_change,
+                                closed_notional,
+                                all_vanished,
+                            ) {
+                                Some(realized) => realized_pnl_this_cycle = realized,
+                                None => {
+                                    warn!(
+                                        equity_change,
+                                        unrealized_change,
+                                        closed_notional,
+                                        all_vanished,
+                                        "⏭️ Skipping realized PnL — account snapshot looks incomplete"
+                                    );
+                                    position_reductions.clear();
+                                }
+                            }
 
                             // Distribute PnL across changed positions proportionally
                             let total_notional: f64 = position_reductions
@@ -1202,6 +1410,37 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
                         if ds.initial_equity == 0.0 {
                             ds.initial_equity = curr_equity;
                         }
+                        // Rebase lifetime realized when it has drifted from equity.
+                        // 2026-08-14: a vanished-position snapshot booked +$329 realized
+                        // while cash equity only moved a few dollars.
+                        let implied = dashboard::pnl_accounting::implied_realized(
+                            curr_equity,
+                            ds.initial_equity,
+                            curr_unrealized,
+                        );
+                        if dashboard::pnl_accounting::realized_needs_rebase(
+                            ds.total_realized_pnl,
+                            implied,
+                        ) {
+                            let delta = implied - ds.total_realized_pnl;
+                            warn!(
+                                stored = ds.total_realized_pnl,
+                                implied,
+                                delta,
+                                "Reconciling realized PnL to equity identity"
+                            );
+                            ds.total_realized_pnl = implied;
+                            // A $100+ identity jump is almost always a snapshot
+                            // glitch (2026-08-14 +$329, 2026-08-15 -$201). Do
+                            // not dump it into today's loss and trip emergency.
+                            if delta.abs() <= 20.0 {
+                                ds.daily_realized_pnl += delta;
+                            }
+                            let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+                            let daily_now = ds.daily_realized_pnl;
+                            ds.daily_pnl_map.insert(today, daily_now);
+                            ds.save_pnl();
+                        }
                         // Track peak equity
                         if curr_equity > ds.peak_equity {
                             ds.peak_equity = curr_equity;
@@ -1320,6 +1559,7 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
                                         close_price,
                                         pos.size.abs(),
                                         mi,
+                                        true,
                                     )
                                     .await
                                 {
@@ -1399,6 +1639,7 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
                                     sig.current_price,
                                     sig.size,
                                     mi,
+                                    true,
                                 )
                                 .await
                             {
@@ -1418,6 +1659,7 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
     });
 
     info!("🎯 Trading system ready. Waiting for market data...");
+    let mut ui_auto_feed_started = auto_universe;
 
     // Main event loop
     let mut trade_count: u64 = 0;
@@ -1429,11 +1671,110 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
             match &msg {
                 lighter::types::WsMessage::OrderBookUpdate(ob) => {
                     store.update_order_book(ob.clone());
+                    if let Some(bbo) = hft::bbo_from_order_book(ob) {
+                        latest_bbos.lock().unwrap().insert(bbo.market_id, bbo);
+                    }
+                }
+                lighter::types::WsMessage::BboUpdate(bbo) => {
+                    store.update_order_book(hft::order_book_from_bbo(bbo));
+                    latest_bbos.lock().unwrap().insert(bbo.market_id, bbo.clone());
                 }
                 lighter::types::WsMessage::TradeUpdate(trade) => {
                     store.add_trade(trade.clone());
                 }
                 _ => {}
+            }
+        }
+
+        let dash_universe = {
+            let ds = dash_state.read().await;
+            ds.universe_mode.clone()
+        };
+        let auto_now = auto_universe
+            || dash_universe == "auto"
+            || dash_universe == "all";
+        if auto_now && !ui_auto_feed_started {
+            ui_auto_feed_started = true;
+            let extra: Vec<u32> = hft::discover_perp_ids(&all_markets)
+                .into_iter()
+                .filter(|id| !subscribed.contains(id))
+                .collect();
+            if !extra.is_empty() {
+                info!(
+                    extra = extra.len(),
+                    "Dashboard switched to auto universe; subscribing remaining perps"
+                );
+                if let Ok(shards) = hft::plan_subscription_shards(&extra, 100) {
+                    for (shard_index, shard) in shards.into_iter().enumerate() {
+                        let store = data_store_clone.clone();
+                        let bbos = latest_bbos.clone();
+                        let url = ws_url.clone();
+                        tokio::spawn(async move {
+                            let conn = lighter::websocket::LighterWebSocket::new(&url);
+                            if conn.connect().await.is_err() {
+                                return;
+                            }
+                            let mut receiver = conn.get_receiver();
+                            for mid in &shard {
+                                let _ = conn.subscribe_ticker(*mid).await;
+                                tokio::time::sleep(std::time::Duration::from_millis(310)).await;
+                            }
+                            info!(shard = shard_index, "UI auto-universe ticker shard live");
+                            while let Ok(message) = receiver.recv().await {
+                                if let lighter::types::WsMessage::BboUpdate(bbo) = message {
+                                    store
+                                        .write()
+                                        .await
+                                        .update_order_book(hft::order_book_from_bbo(&bbo));
+                                    bbos.lock().unwrap().insert(bbo.market_id, bbo);
+                                }
+                            }
+                        });
+                    }
+                }
+            }
+        }
+        if auto_now {
+            let bbos: Vec<(u32, hft::BboUpdate)> = latest_bbos
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(id, bbo)| (*id, bbo.clone()))
+                .collect();
+            if !bbos.is_empty() {
+                let rank_params = uni_params.clone();
+                let resolved = hft::resolve_live_universe(
+                    if auto_now { "auto" } else { &uni_mode },
+                    &resolver_configured_ids,
+                    &all_markets,
+                    &bbos,
+                    &rank_params,
+                );
+                let set_changed = {
+                    use std::collections::HashSet;
+                    let prev: HashSet<u32> = quote_ids.iter().copied().collect();
+                    let next: HashSet<u32> = resolved.quoting_ids.iter().copied().collect();
+                    if next.is_empty() && !prev.is_empty() {
+                        false
+                    } else if prev.is_empty() {
+                        !next.is_empty()
+                    } else {
+                        let overlap = prev.intersection(&next).count();
+                        // Tight crypto books all look similar; the 5th slot
+                        // otherwise rotates every tick and cancel-alls the book.
+                        let allowed_churn = 1usize;
+                        overlap + allowed_churn < prev.len().max(next.len())
+                    }
+                };
+                if set_changed {
+                    info!(
+                        "🎯 Auto universe re-ranked from live BBO: {:?} → {:?}",
+                        quote_ids, resolved.quoting_ids
+                    );
+                    quote_ids = resolved.quoting_ids.clone();
+                    lighter_client.set_active_markets(quote_ids.clone());
+                    dash_state.write().await.active_markets = quote_ids.clone();
+                }
             }
         }
 
@@ -1585,7 +1926,18 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
 
         match strategy.read().await.evaluate(&snapshot).await {
             Ok(Some(signals)) => {
-                for signal in signals {
+                let strat_name = strategy.read().await.name().to_string();
+                if strat_name == "market_making" && !signals.is_empty() {
+                    // Cancel-replace: never stack a new two-sided quote on top of the last.
+                    match lighter_client.cancel_all_orders("all").await {
+                        Ok(()) => {
+                            open_orders_count.store(0, std::sync::atomic::Ordering::Relaxed);
+                            let _ = lighter_client.refresh_nonce().await;
+                        }
+                        Err(e) => warn!("MM cancel-replace: {e}"),
+                    }
+                }
+                for mut signal in signals {
                     // Check if market is active (dashboard trading controls)
                     if !active_markets.contains(&signal.market_id) {
                         continue;
@@ -1671,6 +2023,40 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
                         }
                     }
 
+                    // Risk-reducing signals (exits/stop-loss): clamp quantity to the
+                    // actual position held. Defense in depth on top of reduce_only
+                    // — 即使交易所侧 ReduceOnly 生效，也要保证发出的数量语义正确，
+                    // 防止策略状态滞后导致超大离场量（2026-08-08 事故的 qty 抬升隐患）。
+                    if signal.risk_reducing {
+                        let held_size = {
+                            let ds = dash_state.read().await;
+                            ds.positions
+                                .iter()
+                                .find(|p| {
+                                    p["symbol"]
+                                        .as_str()
+                                        .map(|s| signal.symbol.contains(s))
+                                        .unwrap_or(false)
+                                })
+                                .map(|p| p["size"].as_f64().unwrap_or(0.0).abs())
+                                .unwrap_or(0.0)
+                        };
+                        if held_size <= 0.0 {
+                            info!(
+                                "⏭️ Risk-reducing signal for {} but no position held, skipping",
+                                signal.symbol
+                            );
+                            continue;
+                        }
+                        if signal.quantity > held_size {
+                            info!(
+                                "🛡️ Clamping risk-reducing {} qty {:.6} -> held {:.6}",
+                                signal.symbol, signal.quantity, held_size
+                            );
+                            signal.quantity = held_size;
+                        }
+                    }
+
                     let market_info = market_infos.get(&signal.market_id);
                     info!(
                         "📊 Signal: {} {:?} {} @ ${:.2} qty={:.6} — {}",
@@ -1689,6 +2075,7 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
                             signal.price,
                             signal.quantity,
                             market_info,
+                            signal.risk_reducing,
                         )
                         .await
                     {
@@ -1965,6 +2352,22 @@ async fn run_optimize(
                         sets.push(format!(
                             "grid_count={},investment={},deviation={}",
                             gc, inv, dev
+                        ));
+                    }
+                }
+            }
+            sets
+        }
+        "market_making" | "mm" => {
+            let bid_spreads = [0.0005, 0.001, 0.002];
+            let ask_spreads = [0.0005, 0.001, 0.002];
+            let notionals = [25.0, 50.0, 100.0];
+            let mut sets = Vec::new();
+            for &bid in &bid_spreads {
+                for &ask in &ask_spreads {
+                    for &n in &notionals {
+                        sets.push(format!(
+                            "bid_spread={bid},ask_spread={ask},order_notional={n}"
                         ));
                     }
                 }

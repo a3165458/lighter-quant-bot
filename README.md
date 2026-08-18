@@ -4,7 +4,7 @@
 
 ## ✨ 功能
 
-- **策略引擎**: Grid（网格）策略 + EMA 趋势过滤，可扩展 DCA / Trend Following
+- **策略引擎**: Grid（网格）+ EMA 趋势 + 库存倾斜双边做市（`mm` / `market_making`），可扩展 DCA
 - **实时交易**: REST API + WebSocket 双通道，自动重连 + Keepalive
 - **Web Dashboard**: 实时监控面板（亮色/暗色主题、中英双语、长周期净值查看）
 - **交易控制**: 通过 Dashboard 实时切换交易对、暂停/恢复、一键撤单
@@ -28,9 +28,9 @@
 git clone https://github.com/your-username/lighter-quant-bot.git
 cd lighter-quant-bot
 
-# 2. 创建并编辑 .env
+# 2. 创建并编辑单一环境文件
 cp .env.example .env
-nano .env   # 填入你的 API 凭证
+nano .env   # 分别填写 MAINNET / ROBINHOOD 前缀的凭据
 
 # 3. 一键启动
 docker compose up -d
@@ -88,7 +88,11 @@ cargo run --release -- scan \
 
 ## ⚙️ 配置说明
 
-### .env 必填字段（仅三项）
+### 单文件、网络隔离的凭据（每个网络各三项）
+
+两组凭据保存在同一个 `.env`，但使用 `LIGHTER_MAINNET_*` 和
+`LIGHTER_ROBINHOOD_*` 前缀隔离。程序根据配置文件中的 `lighter.chain_id`
+选择对应的一组，不会读取无前缀的旧凭据。
 
 | 变量 | 说明 | 对应 API Key 生成弹窗字段 |
 |------|------|--------------------------|
@@ -133,17 +137,25 @@ risk:
 机器人同时支持 [Lighter on Robinhood Chain](https://robinhoodchain.lighter.xyz/)（USDG 计价，含 BTC/ETH/SOL 等加密永续与 AAPL/TSLA/NVDA 等股票永续）：
 
 ```bash
-# 实盘（.env 需使用 Robinhood Chain 实例的账户凭据）
+# 实盘（读取 .env 中 LIGHTER_ROBINHOOD_* 凭据）
 cargo run --release -- live --config config/settings.robinhood.yaml
 
 # 下载 RH 实例历史数据（--url 指定实例）
 cargo run --release -- download --symbol TSLA --interval 1h \
   --start 2026-06-26 --end 2026-07-18 --url https://api.rh.lighter.xyz
 
-# 回测
+# 回测（网格）
 cargo run --release -- backtest --strategy grid \
   --data backtests/data/TSLA-rh-1h-20260626-20260718.csv \
   --start 2026-06-26 --end 2026-07-18 --params "grid_count=8,investment=30,deviation=0.003"
+# 做市（Hummingbot simple_pmm 口径；`--strategy market_making` 等价）
+cargo run --release -- backtest --strategy mm \
+  --data backtests/data/BTC-mainnet-1h-20260101-20260809.csv \
+  --start 2026-07-10 --end 2026-08-09 --capital 10000 \
+  --params "bid_spread=0.001,ask_spread=0.001"
+# Robinhood Chain 全永续只读扫描（现货不会进入做市宇宙）
+cargo run --release -- scan --url https://api.rh.lighter.xyz \
+  --ws-url wss://api.rh.lighter.xyz/stream --market-type perp --duration 20 --top 10
 ```
 
 关键差异：

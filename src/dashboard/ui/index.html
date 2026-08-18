@@ -595,6 +595,13 @@ tr:hover td { background:var(--bg-card-hover); }
 /* ══ 其它页面的栅格 ══ */
 .stats-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:1px; background:var(--border); border:1px solid var(--border); border-radius:var(--radius-lg); overflow:hidden; margin-bottom:12px; }
 .strat-grid, .settings-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:12px; }
+.network-options { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+.network-option { position:relative; display:block; padding:16px; border:1px solid var(--border); border-radius:8px; cursor:pointer; transition:border-color .15s, background .15s; }
+.network-option:has(input:checked) { border-color:var(--accent); background:color-mix(in srgb, var(--accent) 8%, transparent); }
+.network-option input { position:absolute; top:16px; right:16px; accent-color:var(--accent); }
+.network-name { font-weight:700; margin-bottom:5px; }
+.network-meta { color:var(--text-sub); font-size:12px; line-height:1.55; }
+.network-active { display:inline-block; margin-left:7px; color:var(--success); font-size:10px; letter-spacing:.08em; }
 .stats-grid > .card { border:none; border-radius:0; }
 .stat-card { display:flex; align-items:center; gap:13px; }
 .stat-icon { width:38px; height:38px; background:var(--bg-strip); border-radius:var(--radius-sm); display:flex; align-items:center; justify-content:center; color:var(--text-sub); flex-shrink:0; }
@@ -641,7 +648,7 @@ tr:hover td { background:var(--bg-card-hover); }
 @media (max-width:900px) {
   .swarm-grid { grid-template-columns:1fr; }
   .stats-grid { grid-template-columns:repeat(2,1fr); }
-  .strat-grid, .settings-grid { grid-template-columns:1fr; }
+  .strat-grid, .settings-grid, .network-options { grid-template-columns:1fr; }
   /* 环形在窄屏会重叠，退化成竖排 */
   .loop-stage { height:auto; display:flex; flex-direction:column; gap:9px; }
   .loop-orbit, .loop-center { display:none; }
@@ -723,6 +730,16 @@ tr:hover td { background:var(--bg-card-hover); }
 
   <!-- ═══ DASHBOARD PAGE ═══ -->
   <div id="page-dashboard" class="page active">
+
+    <div class="card" id="mm-home-jump" style="margin-bottom:12px;">
+      <div class="card-header" style="margin-bottom:0;">
+        <div>
+          <div class="card-title" data-i18n="mmTitle">Market Making</div>
+          <div class="card-subtitle" data-i18n="mmHomeHint">策略页可改做市参数和全市场宇宙。点这里打开。</div>
+        </div>
+        <button class="btn btn-primary" id="btn-open-mm" type="button" data-i18n="openMmSettings">打开做市设置</button>
+      </div>
+    </div>
 
     <!-- ═══ 第一排：锚点黑卡 + 收益卡 ═══ 对应参考稿的 TOTAL PNL / TOP RUNS -->
     <div class="hero-row">
@@ -973,6 +990,11 @@ tr:hover td { background:var(--bg-card-hover); }
       <div style="display:grid; grid-template-columns:1fr 1fr; gap:20px;">
         <!-- Market Toggles -->
         <div>
+          <div class="cfg-label" style="margin-bottom:12px;" data-i18n="universeMode">Universe</div>
+          <select class="cfg-input" id="tc-universe-mode" style="margin-bottom:14px;">
+            <option value="explicit" data-i18n="universeExplicit">Manual list</option>
+            <option value="auto" data-i18n="universeAuto">Auto — rank all perps (rate-budget subset)</option>
+          </select>
           <div class="cfg-label" style="margin-bottom:12px;" data-i18n="activeMarkets">Active Markets</div>
           <div id="tc-markets" style="display:flex; flex-direction:column; gap:10px;">
             <label class="market-toggle">
@@ -1007,6 +1029,19 @@ tr:hover td { background:var(--bg-card-hover); }
     </div>
 
     <div class="strat-grid">
+      <!-- Market Making first so it is visible without scrolling past grid/DCA/trend -->
+      <div class="card">
+        <div class="card-header">
+          <div><div class="card-title" data-i18n="mmTitle">Market Making</div><div class="card-subtitle" data-i18n="mmSub">Two-sided maker quotes</div></div>
+          <span class="badge badge-warn" id="mm-status-badge">○ Inactive</span>
+        </div>
+        <div class="cfg-group"><label class="cfg-label" data-i18n="mmBidSpread">Bid spread</label><input type="number" class="cfg-input" id="cfg-mm-bid" value="0.0005" step="0.0001" min="0.0001" max="0.05"></div>
+        <div class="cfg-group"><label class="cfg-label" data-i18n="mmAskSpread">Ask spread</label><input type="number" class="cfg-input" id="cfg-mm-ask" value="0.0005" step="0.0001" min="0.0001" max="0.05"></div>
+        <div class="cfg-group"><label class="cfg-label" data-i18n="mmNotional">Order notional ($)</label><input type="number" class="cfg-input" id="cfg-mm-notional" value="50" min="1" max="500"></div>
+        <div class="cfg-group"><label class="cfg-label" data-i18n="mmSkew">Inventory skew</label><input type="number" class="cfg-input" id="cfg-mm-skew" value="0.5" step="0.1" min="0" max="1"></div>
+        <button class="btn btn-primary" id="btn-activate-mm" style="width:100%;" data-i18n="activateMm">Activate Market Making</button>
+        <div class="cfg-msg" id="mm-msg"></div>
+      </div>
       <div class="card">
         <div class="card-header">
           <div><div class="card-title" id="strat-name">Grid Strategy</div><div class="card-subtitle">Configuration</div></div>
@@ -1112,8 +1147,22 @@ tr:hover td { background:var(--bg-card-hover); }
 
   <!-- ═══ SETTINGS PAGE ═══ -->
   <div id="page-settings" class="page">
+    <div class="sec" style="margin-bottom:12px;">
+      <div class="sec-head"><div><div class="kicker" data-i18n="networkKicker">ACTIVE CONNECTION · RESTART TO SWITCH</div><div class="sec-title" data-i18n="networkTitle">NETWORK</div></div><span class="pill" id="network-active">—</span></div>
+      <div class="sec-body">
+        <div class="network-options">
+          <label class="network-option"><input type="radio" name="lighter-network" id="network-mainnet" value="mainnet"><div class="network-name">Lighter Mainnet <span class="network-active" id="network-mainnet-active"></span></div><div class="network-meta">USDC · Crypto perpetuals<br>chain ID 304</div></label>
+          <label class="network-option"><input type="radio" name="lighter-network" id="network-robinhood" value="robinhood"><div class="network-name">Robinhood Chain <span class="network-active" id="network-robinhood-active"></span></div><div class="network-meta">USDG · Crypto &amp; stock perpetuals<br>chain ID 466324</div></label>
+        </div>
+        <div class="settings-grid" style="margin-top:14px;margin-bottom:0;">
+          <div><div class="info-row"><span class="info-k">REST API</span><span class="info-v" id="network-rest-url">—</span></div><div class="info-row"><span class="info-k">WebSocket</span><span class="info-v" id="network-ws-url">—</span></div><div class="info-row"><span class="info-k">Signer chain ID</span><span class="info-v" id="network-chain-id">—</span></div></div>
+          <div><div class="note" data-i18n="networkCredentials">Mainnet and Robinhood Chain use separate account credentials. Update the account index, API key index and private key below before switching.</div><button class="btn btn-primary" id="btn-save-network" style="width:100%;margin-top:12px;" data-i18n="saveNetwork">Use selected network after restart</button><div class="cfg-msg" id="network-msg"></div></div>
+        </div>
+      </div>
+      <div class="sec-foot"><div data-i18n="networkFootL">CURRENT CONNECTION STAYS UNCHANGED</div><div data-i18n="networkFootR">SELECTION IS SAVED TO .ENV</div></div>
+    </div>
     <!-- ═══ 环境变量 ═══
-         这些值在**进程启动时**读入，面板改的是磁盘上的 .env，必须重启才生效。
+         这些值在**进程启动时**读入；凭据按网络前缀写入同一个 .env。
          LIGHTER_SECRET_KEY 是只写的：后端 GET 永远不回明文，只回"已配置/长度/后4位"。 -->
     <div class="sec" style="margin-bottom:12px;">
       <div class="sec-head">
@@ -1160,13 +1209,13 @@ tr:hover td { background:var(--bg-card-hover); }
                 <span data-i18n="secretHint">Exchange API private key, not the wallet L1 key. Leaving this blank keeps the existing value.</span>
               </div>
             </div>
-            <button class="btn btn-primary" id="btn-save-env" style="width:100%;" data-i18n="saveEnv">Save to .env</button>
+            <button class="btn btn-primary" id="btn-save-env" style="width:100%;" data-i18n="saveEnv">Save network profile</button>
             <div class="cfg-msg" id="env-msg"></div>
           </div>
         </div>
       </div>
       <div class="sec-foot">
-        <div data-i18n="envFootL">CHANGES LAND IN .ENV ON DISK</div>
+        <div data-i18n="envFootL">ONE FILE · ISOLATED NETWORK PREFIXES</div>
         <div data-i18n="envFootR">RESTART THE BOT TO APPLY</div>
       </div>
     </div>
@@ -1177,7 +1226,7 @@ tr:hover td { background:var(--bg-card-hover); }
         <div class="info-row"><span class="info-k" data-i18n="botStatus">Bot Status</span><span class="info-v" id="set-status" style="color:var(--success);">Running</span></div>
         <div class="info-row"><span class="info-k" data-i18n="apiConnection">API Connection</span><span class="info-v" id="set-conn" style="color:var(--success);">Stable</span></div>
         <div class="info-row"><span class="info-k">Version</span><span class="info-v" id="set-version">—</span></div>
-        <div class="info-row"><span class="info-k">Exchange</span><span class="info-v">Lighter.xyz (mainnet)</span></div>
+        <div class="info-row"><span class="info-k">Exchange</span><span class="info-v" id="set-exchange">Lighter.xyz</span></div>
       </div>
       <div class="card">
         <div class="card-header"><div class="card-title" data-i18n="riskLimits">Risk &amp; Leverage Controls</div></div>
@@ -1874,6 +1923,31 @@ tr:hover td { background:var(--bg-card-hover); }
       .catch(function (e) { txt('env-msg', String(e)); });
   });
   loadEnv();
+
+  function loadNetwork() {
+    fetch('/api/network').then(function (r) { return r.json(); }).then(function (d) {
+      var selected = d.selected === 'robinhood' ? 'robinhood' : 'mainnet';
+      var radio = $('network-' + selected); if (radio) radio.checked = true;
+      txt('network-active', d.active === 'robinhood' ? 'ROBINHOOD CHAIN' : 'MAINNET');
+      txt('network-mainnet-active', d.active === 'mainnet' ? '● ACTIVE' : '');
+      txt('network-robinhood-active', d.active === 'robinhood' ? '● ACTIVE' : '');
+      txt('network-rest-url', d.rest_url || '—');
+      txt('network-ws-url', d.ws_url || '—');
+      txt('network-chain-id', d.chain_id == null ? '—' : String(d.chain_id));
+    }).catch(function () { txt('network-msg', s('loadFailed')); });
+  }
+  var networkBtn = $('btn-save-network');
+  if (networkBtn) networkBtn.addEventListener('click', function () {
+    var selected = document.querySelector('input[name="lighter-network"]:checked');
+    if (!selected) return;
+    txt('network-msg', s('saving'));
+    fetch('/api/network', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({network:selected.value}) })
+      .then(function (r) { return r.json(); }).then(function (d) {
+        txt('network-msg', d.status === 'ok' ? s('savedRestart') : (d.message || 'error'));
+        if (d.status === 'ok' && d.requires_restart) { loadNetwork(); loadEnv(); }
+      }).catch(function (e) { txt('network-msg', String(e)); });
+  });
+  loadNetwork();
 
   window.__panels.lang(localStorage.getItem('lighter-lang') || 'en');
   loadPersistentEvents();

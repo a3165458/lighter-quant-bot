@@ -104,3 +104,126 @@ fn live_path_defaults_to_hard_and_accepts_soft() {
     assert!(create_strategy(&live_config(Some("soft"))).is_ok());
     assert!(create_strategy(&live_config(Some("nonsense"))).is_err());
 }
+
+fn mm_live_config(inventory_mode: Option<&str>) -> Config {
+    let mut b = Config::builder()
+        .set_override("trading.strategies.grid_trading.enabled", false)
+        .unwrap()
+        .set_override("trading.strategies.trend_following.enabled", false)
+        .unwrap()
+        .set_override("trading.strategies.market_making.enabled", true)
+        .unwrap()
+        .set_override("trading.strategies.market_making.bid_spread", 0.001)
+        .unwrap()
+        .set_override("trading.strategies.market_making.ask_spread", 0.001)
+        .unwrap();
+    if let Some(mode) = inventory_mode {
+        b = b
+            .set_override("trading.strategies.market_making.inventory_mode", mode)
+            .unwrap();
+    }
+    b.build().unwrap()
+}
+
+#[test]
+fn live_mm_defaults_to_vol_obi_engine() {
+    let strat = create_strategy(&mm_live_config(None)).unwrap();
+    assert_eq!(strat.name(), "market_making");
+}
+
+#[test]
+fn factory_rejects_unknown_names_and_still_constructs_grid_trend_mm() {
+    assert!(create_strategy_with_params("not_a_strategy", None).is_err());
+    assert_eq!(
+        create_strategy_with_params("grid", None).unwrap().name(),
+        "grid_trading"
+    );
+    assert_eq!(
+        create_strategy_with_params("trend", None).unwrap().name(),
+        "trend_following"
+    );
+    assert_eq!(
+        create_strategy_with_params("mm", Some("bid_spread=0.001,ask_spread=0.001"))
+            .unwrap()
+            .name(),
+        "market_making"
+    );
+    assert_eq!(
+        create_strategy_with_params("market_making", None)
+            .unwrap()
+            .name(),
+        "market_making"
+    );
+}
+
+#[test]
+#[serial]
+fn live_mm_path_rejects_research_nocap_even_with_flag() {
+    std::env::set_var("SOFT_CAP_RESEARCH", "1");
+    let res = create_strategy(&mm_live_config(Some("research_nocap")));
+    std::env::remove_var("SOFT_CAP_RESEARCH");
+    assert!(res.is_err(), "实盘 yaml 路径必须无条件拒绝 research_nocap");
+}
+
+#[tokio::test]
+async fn factory_mm_emits_two_sided_maker_quotes() {
+    let s = create_strategy_with_params(
+        "mm",
+        Some("quote_engine=simple,bid_spread=0.001,ask_spread=0.001"),
+    )
+    .expect("mm factory");
+    let snap = snapshot("BTC", 1_700_000_000, 100.0);
+    let sigs = s.evaluate(&snap).await.unwrap().expect("quotes");
+    assert_eq!(sigs.len(), 2);
+    assert!(sigs.iter().all(|sig| sig.order_type
+        == crate::lighter::types::OrderType::Limit));
+    let mid = 100.0;
+    let buy = sigs
+        .iter()
+        .find(|s| s.side == crate::lighter::types::Side::Buy)
+        .unwrap();
+    let sell = sigs
+        .iter()
+        .find(|s| s.side == crate::lighter::types::Side::Sell)
+        .unwrap();
+    assert!(buy.price < mid && mid < sell.price);
+    assert!(buy.expected_edge_bps.unwrap_or(0.0) > 0.0);
+}
+
+#[test]
+fn live_loop_applies_open_order_and_profitability_gates_to_all_signals() {
+    let src = include_str!("../main.rs");
+    assert!(
+        src.contains("if current_open >= max_open_orders"),
+        "live loop must still enforce max_open_orders"
+    );
+    assert!(
+        src.contains("check_signal"),
+        "live loop must still run the profitability/risk gate"
+    );
+    assert!(
+        !src.contains("bypass max_open_orders"),
+        "MM must not carve out an open-order bypass"
+    );
+}
+
+#[test]
+fn live_loop_re_resolves_universe_from_collected_bbos() {
+    let src = include_str!("../main.rs");
+    assert!(
+        src.contains("resolve_live_universe"),
+        "live path must call the shipped universe resolver"
+    );
+    assert!(
+        src.contains("latest_bbos"),
+        "live path must collect BBO updates"
+    );
+    assert!(
+        src.contains("Auto universe re-ranked from live BBO"),
+        "live path must re-rank after books exist"
+    );
+    assert!(
+        !src.contains("resolve_quoting_market_ids(catalog, &[], &params)"),
+        "empty-BBO first-N fallback must not remain on the live path"
+    );
+}

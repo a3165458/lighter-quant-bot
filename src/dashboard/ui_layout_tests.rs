@@ -199,6 +199,30 @@ fn ai_api_key_is_persisted_in_browser_local_storage() {
 }
 
 #[test]
+fn settings_exposes_restart_safe_network_selection() {
+    for id in [
+        "network-mainnet",
+        "network-robinhood",
+        "network-rest-url",
+        "network-ws-url",
+        "network-chain-id",
+        "btn-save-network",
+        "network-msg",
+    ] {
+        assert!(
+            DASHBOARD_HTML.contains(&format!(r#"id="{id}""#)),
+            "missing network setting control: {id}"
+        );
+    }
+    assert!(DASHBOARD_HTML.contains("/api/network"));
+    assert!(DASHBOARD_HTML.contains("requires_restart"));
+    assert!(
+        DASHBOARD_HTML.contains("credentials") || DASHBOARD_HTML.contains("凭据"),
+        "network settings must warn that network credentials are isolated"
+    );
+}
+
+#[test]
 fn ai_lab_loads_datasets_and_aligns_dates() {
     assert!(
         DASHBOARD_AI_JS.contains("/api/backtest/datasets"),
@@ -425,5 +449,54 @@ fn ai_lab_runs_a_structured_strategy_research_mission() {
         !QUANT_AGENT_JS.contains("startStrategyMission")
             || !QUANT_AGENT_JS.contains("startStrategyMission();\n        toolApplyLive"),
         "research mission must never auto-apply a live strategy"
+    );
+}
+
+#[test]
+fn strategies_page_exposes_market_making_and_universe_controls() {
+    assert!(
+        DASHBOARD_HTML.contains(r#"id="btn-activate-mm""#),
+        "Strategies page must have an Activate Market Making control"
+    );
+    assert!(
+        DASHBOARD_HTML.contains(r#"id="cfg-mm-bid""#)
+            && DASHBOARD_HTML.contains(r#"id="cfg-mm-ask""#)
+            && DASHBOARD_HTML.contains(r#"id="cfg-mm-notional""#),
+        "MM card must expose bid/ask spread and notional"
+    );
+    assert!(
+        DASHBOARD_HTML.contains(r#"id="tc-universe-mode""#),
+        "Trading controls must expose universe mode"
+    );
+    assert!(
+        DASHBOARD_APP_JS.contains("strategy: 'market_making'"),
+        "Apply MM must POST the shipped factory name"
+    );
+    assert!(
+        DASHBOARD_APP_JS.contains("universe_mode"),
+        "Save markets must send universe_mode to /api/trading/markets"
+    );
+    assert!(
+        DASHBOARD_HTML.contains(r#"id="btn-open-mm""#),
+        "home dashboard must link to MM settings"
+    );
+    let mm_btn = DASHBOARD_HTML.find(r#"id="btn-activate-mm""#).unwrap();
+    let dca_btn = DASHBOARD_HTML.find(r#"id="btn-activate-dca""#).unwrap();
+    assert!(
+        mm_btn < dca_btn,
+        "MM card must appear before DCA so it is visible without scrolling past other strategies"
+    );
+}
+
+#[test]
+fn total_pnl_display_prefers_equity_identity_over_accumulated_realized() {
+    assert!(
+        DASHBOARD_APP_JS.contains("inception_pnl"),
+        "headline PnL must use equity - initial, not drifted realized"
+    );
+    assert!(
+        DASHBOARD_APP_JS.contains("d.equity - d.initial_equity")
+            || DASHBOARD_APP_JS.contains("data.equity - data.initial_equity"),
+        "fallback must still be mark-to-market, not raw total_realized_pnl first"
     );
 }

@@ -1,6 +1,6 @@
 # Lighter on Robinhood Chain — Trading Bot Configuration
 # 用法: cargo run --release -- live --config config/settings.robinhood.yaml
-# 注意: .env 中的 LIGHTER_SECRET_KEY / LIGHTER_ACCOUNT_INDEX / LIGHTER_API_KEY_INDEX
+# 注意: .env 中需填写 LIGHTER_ROBINHOOD_SECRET_KEY / ACCOUNT_INDEX / API_KEY_INDEX
 #       必须是 Robinhood Chain 实例的账户凭据（与主网账户不通用）
 lighter:
   # Robinhood Chain instance (quote asset: USDG, L1 chain id 4663)
@@ -25,7 +25,19 @@ trading:
   #             17=ORCL 18=SPCX 19=BABA 23=COIN 25=QQQ 26=SPY 29=AMD 34=PLTR ...
   #   现货 (USDG): 2048=ETH/USDG 2049=AAPL/USDG ... (机器人当前只支持永续)
   # 完整列表: curl https://api.rh.lighter.xyz/api/v1/orderBooks
+  # Default stays BTC-only grid. To quote a rate-budget-safe subset of every
+  # discovered perp, set universe.mode: auto and enable market_making below.
   markets: [1]
+
+  universe:
+    mode: explicit
+    max_spread_bps: 25
+    min_spread_bps: 0
+    # vol_obi wants liquid/tight books (BTC/ETH/HYPE). Do not rank wide names first.
+    prefer_wider_spreads: false
+    min_size: 0.01
+    refresh_interval_secs: 15
+    actions_per_refresh: 3
 
   # Maximum number of open orders at any time
   max_open_orders: 8
@@ -53,6 +65,32 @@ trading:
       trailing_stop: 0.0
       notional: 1000
 
+    # Two-sided maker. Default quote_engine=vol_obi is the djienne port:
+    # realized-vol half-spread, book OBI, Binance depth alpha on crypto,
+    # inventory exit bias. `simple` keeps the old join-BBO PMM.
+    market_making:
+      enabled: false
+      quote_engine: vol_obi
+      alpha_source: binance
+      alpha_stale_secs: 5.0
+      bid_spread: 0.001
+      ask_spread: 0.001
+      order_notional: 30
+      inventory_skew: 0.5
+      inventory_target: 0.01
+      max_inventory: 0.05
+      inventory_mode: hard
+      min_requote_secs: 10
+      vol_obi:
+        window_steps: 6000
+        step_ns: 100000000
+        vol_to_half_spread: 6.0
+        min_half_spread_bps: 2.0
+        c1_ticks: 40.0
+        skew: 0.1
+        looking_depth: 0.025
+        min_warmup_samples: 100
+
   # Position management
   position:
     max_single_trade_percent: 50
@@ -65,11 +103,12 @@ profitability:
   enabled: true
   entry_fee_bps: 0.0
   exit_fee_bps: 0.0
-  entry_slippage_bps: 2.0
-  exit_slippage_bps: 2.0
+  # RH Standard is 0 maker/taker. Gate only covers adverse + tiny slip.
+  entry_slippage_bps: 0.5
+  exit_slippage_bps: 0.5
   funding_bps: 0.5
-  adverse_selection_bps: 3.0
-  min_net_edge_bps: 2.0
+  adverse_selection_bps: 1.5
+  min_net_edge_bps: 0.5
 
 # Risk management
 risk:
@@ -107,7 +146,7 @@ backtest:
 dashboard:
   enabled: true
   host: "127.0.0.1"
-  port: 2029
+  port: 2028
   refresh_interval_ms: 1000
 
   charts:

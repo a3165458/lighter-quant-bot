@@ -48,6 +48,15 @@
             maxLeverage: 'Max Leverage',
             investPerGrid: 'Investment per Grid ($)', priceDeviation: 'Price Deviation (%)',
             dcaSub: 'Dollar-Cost Averaging', trendSub: 'EMA Crossover + RSI',
+            mmTitle: 'Market Making', mmSub: 'Two-sided maker quotes',
+            mmBidSpread: 'Bid spread', mmAskSpread: 'Ask spread',
+            mmNotional: 'Order notional ($)', mmSkew: 'Inventory skew',
+            activateMm: 'Activate Market Making',
+            openMmSettings: 'Open MM settings',
+            mmHomeHint: 'Bid/ask spread, notional, inventory skew, and auto-universe live on the Strategies page.',
+            universeMode: 'Universe',
+            universeExplicit: 'Manual list',
+            universeAuto: 'Auto — rank all perps (rate-budget subset)',
             buyInterval: 'Buy Interval (hours)', amountPerBuy: 'Amount per Buy ($)',
             dipThreshold: 'Dip Threshold (%)', fastEma: 'Fast EMA Period',
             slowEma: 'Slow EMA Period', rsiPeriod: 'RSI Period',
@@ -80,11 +89,14 @@
             swarmFootL: 'Nearest to market is inverted', swarmFootR: 'Fill bar = filled / quantity',
             railKicker: 'Real events only \u00b7 newest first',
             envKicker: 'Read at process start \u00b7 restart required', envTitle: 'Environment',
+            networkKicker: 'Active connection \u00b7 restart to switch', networkTitle: 'Network',
+            networkCredentials: 'Mainnet and Robinhood Chain use separate account credentials. Update the account index, API key index and private key below before switching.',
+            saveNetwork: 'Use selected network after restart', networkFootL: 'Current connection stays unchanged', networkFootR: 'Selection is saved to .env',
             envWarnTag: 'Security',
             envWarn: 'This panel has no authentication and the live process binds 0.0.0.0. Anyone who can reach this port can edit these values. The secret key is write-only \u2014 it is never sent back to the browser.',
             writeOnly: '(write-only)', currentValue: 'current',
             secretHint: 'Exchange API private key, not the wallet L1 key. Leaving this blank keeps the existing value.',
-            saveEnv: 'Save to .env', envFootL: 'Changes land in .env on disk', envFootR: 'Restart the bot to apply', eventLog: 'Event Log', thisWeek: 'This week \u00b7 realised',
+            saveEnv: 'Save network credentials', envFootL: 'One file · isolated network prefixes', envFootR: 'Restart the bot to apply', eventLog: 'Event Log', thisWeek: 'This week \u00b7 realised',
             confirmCancel: 'Cancel ALL open orders? This cannot be undone.', navMenu: 'Menu',
         },
         cn: {
@@ -105,6 +117,15 @@
             maxLeverage: '最大杠杆',
             investPerGrid: '每格投资 ($)', priceDeviation: '价格偏差 (%)',
             dcaSub: '定投策略', trendSub: 'EMA交叉 + RSI',
+            mmTitle: '做市', mmSub: '双边挂单（库存倾斜）',
+            mmBidSpread: '买单价差', mmAskSpread: '卖单价差',
+            mmNotional: '单笔名义 ($)', mmSkew: '库存倾斜',
+            activateMm: '启用做市',
+            openMmSettings: '打开做市设置',
+            mmHomeHint: '买/卖价差、名义、库存倾斜和全市场宇宙在「策略」页。点这里打开。',
+            universeMode: '标的宇宙',
+            universeExplicit: '手动勾选',
+            universeAuto: '自动 — 全永续排序（按速率预算截断）',
             buyInterval: '买入间隔 (小时)', amountPerBuy: '每次买入 ($)',
             dipThreshold: '下跌阈值 (%)', fastEma: '快速EMA周期',
             slowEma: '慢速EMA周期', rsiPeriod: 'RSI周期',
@@ -137,11 +158,14 @@
             swarmFootL: '离市价最近的一档是反相卡', swarmFootR: '进度条 = 已成交 / 委托量',
             railKicker: '只记真实事件 \u00b7 最新在上',
             envKicker: '进程启动时读入 \u00b7 需重启生效', envTitle: '环境变量',
+            networkKicker: '当前连接 \u00b7 切换需重启', networkTitle: '网络',
+            networkCredentials: '主网与 Robinhood Chain 的账户凭据互不通用。切换前请同步更新下方的账户索引、API Key 索引和私钥。',
+            saveNetwork: '重启后使用所选网络', networkFootL: '当前连接不会立即改变', networkFootR: '选择保存到 .env',
             envWarnTag: '安全',
             envWarn: '本面板没有任何鉴权，且实盘进程绑定在 0.0.0.0。能访问该端口的任何人都能改这些值。密钥是只写的 \u2014 后端永远不会把明文回给浏览器。',
             writeOnly: '（只写）', currentValue: '当前',
             secretHint: '这是交易所 API 私钥，不是钱包 L1 私钥。留空表示保持原值不变。',
-            saveEnv: '保存到 .env', envFootL: '改动写入磁盘上的 .env', envFootR: '重启机器人后生效', eventLog: '事件流', thisWeek: '本周 \u00b7 已实现',
+            saveEnv: '保存网络凭据', envFootL: '单一文件 · 两组网络前缀隔离', envFootR: '重启机器人后生效', eventLog: '事件流', thisWeek: '本周 \u00b7 已实现',
             confirmCancel: '取消所有挂单？此操作不可撤销。', navMenu: '菜单',
         }
     };
@@ -339,6 +363,16 @@
             if (page === 'history') { renderHistory(); renderPositionSummary(); }
         });
     });
+
+    function openStrategiesPage() {
+        const link = document.querySelector('.nav-item[data-page="strategies"]');
+        if (link) link.click();
+        const mmCard = $('btn-activate-mm');
+        if (mmCard) mmCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+    if ($('btn-open-mm')) {
+        $('btn-open-mm').addEventListener('click', openStrategiesPage);
+    }
 
     const navToggle = $('btn-nav-toggle');
     const navBackdrop = $('mobile-nav-backdrop');
@@ -567,10 +601,15 @@
             // retained trade buffer under-reports after ring-buffer trims and
             // diverged from total_realized_pnl (e.g. -$0.74 vs +$17.27).
             applyServerHistoryStats(data);
-            if (data.total_realized_pnl !== undefined) {
+            const inception = (typeof data.inception_pnl === 'number')
+                ? data.inception_pnl
+                : (typeof data.equity === 'number' && data.initial_equity > 0)
+                    ? data.equity - data.initial_equity
+                    : data.total_realized_pnl;
+            if (inception !== undefined) {
                 const el = $('mc-total');
-                if (el) { el.textContent = fmtPnl(data.total_realized_pnl); el.className = 'value ' + pnlClass(data.total_realized_pnl); }
-                if ($('sp-pnl')) $('sp-pnl').textContent = fmtPnl(data.total_realized_pnl);
+                if (el) { el.textContent = fmtPnl(inception); el.className = 'value ' + pnlClass(inception); }
+                if ($('sp-pnl')) $('sp-pnl').textContent = fmtPnl(inception);
             }
         }).catch(e => addLog('e', 'Failed to load PnL data'));
 
@@ -579,6 +618,12 @@
                 if ($('cfg-gc')) $('cfg-gc').value = data.params.grid_count || 6;
                 if ($('cfg-inv')) $('cfg-inv').value = data.params.investment_per_grid || 8;
                 if ($('cfg-dev')) $('cfg-dev').value = data.params.price_deviation || 0.012;
+                if ($('cfg-mm-bid') && data.params.bid_spread) $('cfg-mm-bid').value = data.params.bid_spread;
+                if ($('cfg-mm-ask') && data.params.ask_spread) $('cfg-mm-ask').value = data.params.ask_spread;
+                if ($('cfg-mm-notional') && (data.params.order_notional || data.params.order_amount)) {
+                    $('cfg-mm-notional').value = data.params.order_notional || data.params.order_amount;
+                }
+                if ($('cfg-mm-skew') && data.params.inventory_skew) $('cfg-mm-skew').value = data.params.inventory_skew;
             }
             if (data.strategy && $('strat-name')) $('strat-name').textContent = data.strategy;
             updateStrategyBadges(data.strategy || 'grid_trading');
@@ -594,6 +639,12 @@
         if (gridBadge) gridBadge.textContent = (active === 'grid_trading' || active === 'grid') ? '● Active' : '○ Inactive';
         if (dcaBadge) { dcaBadge.className = 'badge ' + (active === 'dca' ? 'badge-up' : 'badge-warn'); dcaBadge.textContent = active === 'dca' ? '● Active' : '○ Inactive'; }
         if (trendBadge) { trendBadge.className = 'badge ' + (active === 'trend_following' || active === 'trend' ? 'badge-up' : 'badge-warn'); trendBadge.textContent = (active === 'trend_following' || active === 'trend') ? '● Active' : '○ Inactive'; }
+        const mmBadge = $('mm-status-badge');
+        if (mmBadge) {
+            const on = active === 'market_making' || active === 'mm';
+            mmBadge.className = 'badge ' + (on ? 'badge-up' : 'badge-warn');
+            mmBadge.textContent = on ? '● Active' : '○ Inactive';
+        }
     }
 
     // ── Strategy Apply (Grid) ──
@@ -672,6 +723,33 @@
         });
     }
 
+    const mmBtn = $('btn-activate-mm');
+    if (mmBtn) {
+        mmBtn.addEventListener('click', function() {
+            const body = { strategy: 'market_making', params: {
+                quote_engine: 'vol_obi',
+                alpha_source: 'binance',
+                bid_spread: parseFloat($('cfg-mm-bid').value),
+                ask_spread: parseFloat($('cfg-mm-ask').value),
+                order_notional: parseFloat($('cfg-mm-notional').value),
+                inventory_skew: parseFloat($('cfg-mm-skew').value)
+            }};
+            this.disabled = true; this.innerText = 'Activating...';
+            const msgEl = $('mm-msg');
+            fetch('/api/strategy', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+                .then(r => r.json())
+                .then(d => {
+                    msgEl.innerText = '✓ Market making activated';
+                    msgEl.style.color = 'var(--success)';
+                    updateStrategyBadges('market_making');
+                    addNotification('trade', 'Market making activated');
+                    setTimeout(() => msgEl.innerText = '', 3000);
+                })
+                .catch(() => { msgEl.innerText = '✗ Failed'; msgEl.style.color = 'var(--danger)'; })
+                .finally(() => { this.disabled = false; this.innerText = t('activateMm'); });
+        });
+    }
+
     // ── Metrics Update ──
     let lastEquity = 0, lastAvail = 0, lastPeak = 0;
 
@@ -687,13 +765,19 @@
         setVal('s-avail', '$' + lastAvail.toFixed(2));
         setVal('s-peak', '$' + lastPeak.toFixed(2));
 
-        const daily = d.daily_realized_pnl || 0;
+        const daily = (typeof d.daily_pnl === 'number')
+            ? d.daily_pnl
+            : (d.daily_realized_pnl || 0);
         setPnl('mc-daily', daily);
 
         const upnl = d.unrealized_pnl || 0;
         setPnl('mc-upnl', upnl);
 
-        const total = d.total_realized_pnl || 0;
+        const total = (typeof d.inception_pnl === 'number')
+            ? d.inception_pnl
+            : (typeof d.equity === 'number' && typeof d.initial_equity === 'number' && d.initial_equity > 0)
+                ? d.equity - d.initial_equity
+                : (d.total_realized_pnl || 0);
         setPnl('mc-total', total);
         if ($('sp-pnl')) { $('sp-pnl').textContent = fmtPnl(total); $('sp-pnl').className = 'info-v ' + pnlClass(total); }
 
@@ -705,6 +789,7 @@
         setVal('pf-ord-count', d.open_orders || 0);
 
         if (d.version) setVal('set-version', d.version);
+        if (d.network) setVal('set-exchange', d.network === 'robinhood' ? 'Lighter · Robinhood Chain' : 'Lighter Mainnet');
         if (d.strategy) setVal('strat-name', d.strategy);
 
         // Equity chart update
@@ -898,8 +983,11 @@
     // retained close events (older duration_secs are not stored separately).
     function applyServerHistoryStats(data) {
         if (!data) return;
-        if (data.total_realized_pnl !== undefined) {
-            setPnl('hc-pnl', data.total_realized_pnl);
+        const histPnl = (typeof data.inception_pnl === 'number')
+            ? data.inception_pnl
+            : data.total_realized_pnl;
+        if (histPnl !== undefined) {
+            setPnl('hc-pnl', histPnl);
         }
         const closed = data.total_closed_trades;
         if (closed !== undefined && closed !== null) {
@@ -1174,6 +1262,9 @@
                 tradingPaused = data.trading_paused;
                 updatePauseButton();
             }
+            if (data.universe_mode && $('tc-universe-mode')) {
+                $('tc-universe-mode').value = data.universe_mode === 'all' ? 'auto' : data.universe_mode;
+            }
         }).catch(() => {});
     }
 
@@ -1206,10 +1297,11 @@
                 markets.push(parseInt(cb.getAttribute('data-market')));
             });
             const msgEl = $('tc-market-msg');
+            const universe_mode = ($('tc-universe-mode') && $('tc-universe-mode').value) || 'explicit';
             fetch('/api/trading/markets', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ markets })
+                body: JSON.stringify({ markets, universe_mode })
             }).then(r => r.json()).then(data => {
                 activeMarketsSet = new Set(markets);
                 updateMarketsDisplay();

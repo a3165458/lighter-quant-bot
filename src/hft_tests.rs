@@ -3,9 +3,11 @@ use std::time::Duration;
 use clap::Parser;
 
 use crate::hft::{
-    parse_bbo_update, plan_subscription_shards, BboUpdate, BookContinuity, BookHealth, ScanStats,
-    StandardRateBudget,
+    parse_bbo_update, plan_subscription_shards, resolve_live_universe, resolve_quoting_market_ids,
+    select_quoting_universe, BboUpdate, BookContinuity, BookHealth, ScanStats, StandardRateBudget,
+    UniverseMarket, UniverseSelectParams,
 };
+use crate::lighter::types::MarketInfo;
 use crate::lighter::{types::WsMessage, websocket::LighterWebSocket};
 use crate::{Cli, Commands};
 
@@ -238,4 +240,267 @@ fn scan_cli_defaults_to_all_mainnet_markets_in_observation_mode() {
         }
         _ => panic!("expected scan command"),
     }
+}
+
+fn fixture_info(id: u32, symbol: &str, market_type: &str) -> MarketInfo {
+    MarketInfo {
+        market_id: id,
+        symbol: symbol.to_string(),
+        size_decimals: 4,
+        price_decimals: 2,
+        min_base_amount: 0.001,
+        min_quote_amount: 1.0,
+        last_trade_price: 100.0,
+        market_type: market_type.to_string(),
+    }
+}
+
+fn fixture_market(
+    id: u32,
+    symbol: &str,
+    market_type: &str,
+    bid: f64,
+    ask: f64,
+    bid_sz: f64,
+    ask_sz: f64,
+    health: BookHealth,
+) -> UniverseMarket {
+    UniverseMarket {
+        market_id: id,
+        symbol: symbol.to_string(),
+        market_type: market_type.to_string(),
+        bid_price: bid,
+        ask_price: ask,
+        bid_size: bid_sz,
+        ask_size: ask_sz,
+        book_health: health,
+    }
+}
+
+#[test]
+fn universe_selector_keeps_healthy_perps_and_respects_standard_budget() {
+    let params = UniverseSelectParams {
+        max_spread_bps: 20.0,
+        min_spread_bps: 0.0,
+        min_size: 1.0,
+        prefer_wider_spreads: false,
+        refresh_interval: Duration::from_secs(10),
+        actions_per_refresh: 2,
+    };
+    let cap = crate::hft::max_markets_for_standard_budget(
+        params.refresh_interval,
+        params.actions_per_refresh,
+    );
+    assert!(cap > 0, "10s window at 1 action/s must allow at least one name");
+
+    let catalog = vec![
+        fixture_market(1, "BTC", "perp", 100.0, 100.05, 5.0, 5.0, BookHealth::Live),
+        fixture_market(2, "ETH", "perp", 50.0, 50.04, 8.0, 8.0, BookHealth::Live),
+        fixture_market(3, "WIDE", "perp", 10.0, 10.10, 4.0, 4.0, BookHealth::Live),
+        fixture_market(4, "THIN", "perp", 20.0, 20.01, 0.1, 0.1, BookHealth::Live),
+        fixture_market(5, "SPOTY", "spot", 15.0, 15.01, 9.0, 9.0, BookHealth::Live),
+        fixture_market(6, "HALT", "perp", 30.0, 30.01, 3.0, 3.0, BookHealth::Halted),
+        fixture_market(7, "XED", "perp", 40.0, 39.00, 3.0, 3.0, BookHealth::Live),
+        fixture_market(8, "SOL", "perp", 25.0, 25.02, 6.0, 6.0, BookHealth::Live),
+        fixture_market(9, "AAPL", "perp", 180.0, 180.06, 2.0, 2.0, BookHealth::Live),
+        fixture_market(10, "NVDA", "perp", 90.0, 90.04, 3.0, 3.0, BookHealth::Live),
+        fixture_market(11, "MSFT", "perp", 70.0, 70.03, 3.0, 3.0, BookHealth::Live),
+        fixture_market(12, "TSLA", "perp", 40.0, 40.03, 3.0, 3.0, BookHealth::Live),
+        fixture_market(13, "META", "perp", 60.0, 60.04, 3.0, 3.0, BookHealth::Live),
+        fixture_market(14, "AMD", "perp", 12.0, 12.01, 4.0, 4.0, BookHealth::Live),
+    ];
+
+    let selected = select_quoting_universe(&catalog, &params);
+    assert!(
+        selected.len() <= cap,
+        "selector must not exceed Standard refresh budget ({cap})"
+    );
+    assert!(!selected.is_empty());
+    let names: Vec<&str> = selected.iter().map(|m| m.symbol.as_str()).collect();
+    assert!(
+        !names.contains(&"WIDE"),
+        "wide-spread perp must stay out: {names:?}"
+    );
+    assert!(
+        !names.contains(&"THIN"),
+        "thin book must stay out: {names:?}"
+    );
+    assert!(
+        !names.contains(&"SPOTY"),
+        "spot must stay out of the live universe: {names:?}"
+    );
+    assert!(
+        !names.contains(&"HALT") && !names.contains(&"XED"),
+        "halted/crossed books must stay out: {names:?}"
+    );
+    assert!(
+        names.iter().all(|n| *n != "SPOTY"),
+        "selector must never quote spot"
+    );
+    let shards = plan_subscription_shards(
+        &selected.iter().map(|m| m.market_id).collect::<Vec<_>>(),
+        100,
+    )
+    .unwrap();
+    assert_eq!(shards.iter().map(|s| s.len()).sum::<usize>(), selected.len());
+}
+
+#[test]
+fn resolve_quoting_ids_uses_catalog_not_hardcoded_ids() {
+    let catalog = vec![
+        fixture_info(16, "TSLA", "perp"),
+        fixture_info(2048, "ETH/USDG", "spot"),
+        fixture_info(23, "COIN", "perp"),
+        fixture_info(1, "BTC", "perp"),
+    ];
+    let bbo = |id, bid, ask, sz| {
+        (
+            id,
+            BboUpdate {
+                market_id: id,
+                symbol: String::new(),
+                nonce: 1,
+                exchange_timestamp_ms: 1,
+                bid_price: bid,
+                bid_size: sz,
+                ask_price: ask,
+                ask_size: sz,
+            },
+        )
+    };
+    let bbos = vec![
+        bbo(16, 100.0, 100.02, 5.0),
+        bbo(2048, 2000.0, 2000.10, 9.0),
+        bbo(23, 50.0, 50.01, 4.0),
+        bbo(1, 80.0, 80.02, 3.0),
+    ];
+    let params = UniverseSelectParams {
+        max_spread_bps: 20.0,
+        min_spread_bps: 0.0,
+        min_size: 1.0,
+        prefer_wider_spreads: false,
+        refresh_interval: Duration::from_secs(10),
+        actions_per_refresh: 2,
+    };
+    let ids = resolve_quoting_market_ids(&catalog, &bbos, &params);
+    assert!(!ids.is_empty());
+    assert!(!ids.contains(&2048), "spot id must not be selected");
+    assert!(ids.iter().all(|id| catalog.iter().any(|m| m.market_id == *id)));
+}
+
+#[test]
+fn live_resolver_empty_bbos_do_not_skip_qualify_rank() {
+    // Lowest market_id is a wide-spread perp. A first-N-by-id fallback would
+    // quote it forever when the live path passes &[] for books.
+    let catalog = vec![
+        fixture_info(1, "WIDE", "perp"),
+        fixture_info(2, "THIN", "perp"),
+        fixture_info(3, "SPOTY", "spot"),
+        fixture_info(9, "TIGHT", "perp"),
+    ];
+    let params = UniverseSelectParams {
+        max_spread_bps: 20.0,
+        min_spread_bps: 0.0,
+        min_size: 1.0,
+        prefer_wider_spreads: false,
+        refresh_interval: Duration::from_secs(10),
+        actions_per_refresh: 2,
+    };
+    let empty = resolve_live_universe("auto", &[1], &catalog, &[], &params);
+    assert!(
+        empty.quoting_ids.is_empty(),
+        "empty BBO must not produce a quoting set (got {:?})",
+        empty.quoting_ids
+    );
+    assert!(
+        empty.awaiting_books,
+        "live resolver must keep waiting for books instead of freezing first-N ids"
+    );
+    assert!(
+        empty.subscribe_ids.contains(&1) && empty.subscribe_ids.contains(&9),
+        "auto mode still observes every discovered perp: {:?}",
+        empty.subscribe_ids
+    );
+    assert!(
+        !empty.subscribe_ids.contains(&3),
+        "spot stays out of the observe set"
+    );
+
+    let bbo = |id, bid, ask, sz| {
+        (
+            id,
+            BboUpdate {
+                market_id: id,
+                symbol: String::new(),
+                nonce: 1,
+                exchange_timestamp_ms: 1,
+                bid_price: bid,
+                bid_size: sz,
+                ask_price: ask,
+                ask_size: sz,
+            },
+        )
+    };
+    let ranked = resolve_live_universe(
+        "auto",
+        &[1],
+        &catalog,
+        &[
+            bbo(1, 10.0, 10.10, 4.0),
+            bbo(2, 20.0, 20.01, 0.1),
+            bbo(3, 15.0, 15.01, 9.0),
+            bbo(9, 80.0, 80.02, 5.0),
+        ],
+        &params,
+    );
+    assert!(
+        !ranked.quoting_ids.contains(&1),
+        "wide-spread id=1 must be filtered once books exist: {:?}",
+        ranked.quoting_ids
+    );
+    assert!(
+        !ranked.quoting_ids.contains(&2),
+        "thin book must stay out: {:?}",
+        ranked.quoting_ids
+    );
+    assert!(
+        ranked.quoting_ids.contains(&9),
+        "tight perp must win after BBO rank: {:?}",
+        ranked.quoting_ids
+    );
+    assert_ne!(
+        empty.quoting_ids, ranked.quoting_ids,
+        "feeding books must change the quoting set"
+    );
+}
+
+#[test]
+fn mm_universe_prefers_wider_healthy_spreads() {
+    let params = UniverseSelectParams {
+        max_spread_bps: 25.0,
+        min_spread_bps: 8.0,
+        min_size: 1.0,
+        prefer_wider_spreads: true,
+        refresh_interval: Duration::from_secs(15),
+        actions_per_refresh: 3,
+    };
+    let catalog = vec![
+        fixture_market(1, "BTC", "perp", 100.0, 100.02, 5.0, 5.0, BookHealth::Live),
+        fixture_market(5, "LIT", "perp", 2.0, 2.004, 4.0, 4.0, BookHealth::Live),
+        fixture_market(36, "WIDE", "perp", 10.0, 10.10, 3.0, 3.0, BookHealth::Live),
+    ];
+    let selected = select_quoting_universe(&catalog, &params);
+    let names: Vec<&str> = selected.iter().map(|m| m.symbol.as_str()).collect();
+    assert!(
+        !names.contains(&"BTC"),
+        "sub-8bps BTC should stay out of maker universe: {names:?}"
+    );
+    assert!(
+        !names.contains(&"WIDE"),
+        "50bps+ junk stays out: {names:?}"
+    );
+    assert!(
+        names.contains(&"LIT"),
+        "mid-spread healthy perp should be selected: {names:?}"
+    );
 }

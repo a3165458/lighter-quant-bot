@@ -204,6 +204,10 @@ unsafe fn read_and_free(signer: &SignerLib, ptr: *mut c_char) -> Option<String> 
 
 /// Sign a create-order transaction.
 /// Returns (tx_type, tx_info_hex).
+///
+/// 参数个数超 clippy 上限是刻意的：本函数是 FFI 边界，参数须与 Go 签名库
+/// SignCreateOrderFn 的 C ABI 逐位对应，拆成 struct 会破坏调用点的直接映射。
+#[allow(clippy::too_many_arguments)]
 pub fn sign_create_order(
     market_index: i32,
     base_amount: i64,
@@ -212,6 +216,7 @@ pub fn sign_create_order(
     order_type: i32,
     time_in_force: i32,
     nonce: i64,
+    reduce_only: bool,
 ) -> Result<(u8, String), LighterError> {
     let signer = get_signer()?;
     let now = std::time::SystemTime::now()
@@ -231,8 +236,8 @@ pub fn sign_create_order(
             if is_ask { 1 } else { 0 },
             order_type,
             time_in_force,
-            0, // reduceOnly
-            0, // triggerPrice
+            if reduce_only { 1 } else { 0 }, // reduceOnly
+            0,                               // triggerPrice
             order_expiry as c_longlong,
             no_integrator as c_longlong,
             0, // integratorTakerFee

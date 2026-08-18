@@ -1,5 +1,8 @@
 # 敏感文件
 .env
+.env.crash*
+.env*backup*
+.env*.bak*
 config/settings.local.yaml
 keys/
 

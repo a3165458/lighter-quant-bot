@@ -15,18 +15,20 @@ lighter:
 # Trading configuration
 trading:
   # Markets to trade (market_id: 0=ETH, 1=BTC)
-  # GLM-5 analysis: ETH WinRate=20%, MaxDD=34% → removed
-  markets: [1]
+  # 2026-08-09 用户选择方案 A（双标的高频化）: 加入 ETH。共享 7/21/0.05/0.06 参数。
+  # 代价: 全周期 +9.65% → ~+4.4~7.5%（按权重），频率 4.6 → ~12.6 笔/月；ETH 本身无 alpha（详见 trend-scan-20260809/FINDINGS.md）。
+  markets: [0, 1]
 
   # Maximum number of open orders at any time
   max_open_orders: 8
 
   # Strategy configuration
-  # 2026-08-02 切换为趋势策略（fast=14/slow=50/sl=0.05/tp=0.06, notional=200）:
-  #   960 次多窗口扫描（240 组 × 4 窗口 01-01~07-25），唯一 4/4 窗口全正组合，全周期 +9.78%
-  #   grid 实盘同款（12/30/0.004）4 窗口全负（-15%~-27.5%）、全周期 -52.6%、跑输 BTC 基准 25pt —— 亏损根因
-  #   样本外 8 天（07-25~08-02）震荡市 -6.24% vs grid -1.12%：趋势策略赢单边、震荡期会被反复止损
-  #   详细记录: backtests/results/trend-scan-20260802/FINDINGS.md（gitignore，不进版本库）
+  # 2026-08-08 切换为趋势策略（fast=7/slow=21/sl=0.05/tp=0.06, notional=60）:
+  #   延伸数据（01-01~08-08）1080 组全周期扫描：8-02 候选 14/50/notional=200 在延伸窗口 DD 22.21% 超 10% 门禁 → 弃用
+  #   门禁合规终选 7/21/0.05/0.06/cmin0.005/clb3/notional=60：+9.58%，Sharpe 1.83，MaxDD 4.28%，33 笔，峰值杠杆 0.25x，0 强平
+  #   grid 实盘同款（12/50/0.004）延伸全周期 -81.08%、跑输 BTC 基准 55pt —— 亏损根因，改由 JSON 门禁提案切换（proposal mLpojIk0ZtbWrZ8uTO）
+  #   多窗口方向性：01-03 +13.9%、03-05 +15.0%、05-06 +7.2%、06-08 -3.5%（斜率确认在震荡市减仓，OOS 08-02~08 0 笔）
+  #   详细记录: backtests/results/trend-scan-20260808/FINDINGS.md（gitignore，不进版本库）
   #   回滚方法: grid_trading.enabled 改回 true、trend_following.enabled 改回 false，重启 pm2
   strategies:
     grid_trading:
@@ -37,20 +39,21 @@ trading:
 
     trend_following:
       enabled: true
-      fast_ma: 14
-      slow_ma: 50
+      fast_ma: 7
+      slow_ma: 21
       stop_loss: 0.05
       take_profit: 0.06
       trailing_stop: 0.0
-      notional: 200
+      # 2026-08-09 双标的上线: 60→30，与 data/strategy_config.json 保持一致（两标的共享，合计敞口与原来单标 60 相当）
+      notional: 30
       # ADX 震荡过滤：>0 启用（低于该值=震荡市禁新开仓），0=关闭。默认关闭，回测 A/B 验证后再开。
       adx_threshold: 0
       adx_period: 14
       # 慢线斜率确认：>0 启用（开多需 slow EMA 在 lookback 内上涨该比例，开空则下跌），0=关闭。
-      # 只过滤进场、不影响离场。2026-08-02 A/B 验证后启用：全周期+8.92%/胜率50% vs baseline+9.78%/35%，
-      # 震荡窗 0 笔（消除 baseline 的 -6.24% 亏损）。ADX 保持关闭。
+      # 只过滤进场、不影响离场。8-02 A/B 验证后启用；clb 从 5 下调到 3 配合 7/21 快线族（延伸扫描最优）。
+      # ADX 保持关闭。
       confirm_slope_min: 0.005
-      confirm_lookback: 5
+      confirm_lookback: 3
 
   # Position management
   position:

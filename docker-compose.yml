@@ -3,7 +3,7 @@
 #
 # 快速启动:
 #   1. cp .env.example .env
-#   2. 编辑 .env 填入 API 凭证
+#   2. 编辑 .env 中对应网络前缀的 API 凭证
 #   3. docker compose up -d
 #   4. 访问 http://localhost:2028 查看 Dashboard
 # ═══════════════════════════════════════════════════════

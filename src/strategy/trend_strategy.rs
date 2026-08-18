@@ -182,7 +182,11 @@ impl Strategy for TrendStrategy {
                 if signed_qty.abs() <= 1e-12 {
                     state.position = None;
                 } else {
-                    let side = if signed_qty > 0.0 { Side::Buy } else { Side::Sell };
+                    let side = if signed_qty > 0.0 {
+                        Side::Buy
+                    } else {
+                        Side::Sell
+                    };
                     let quantity = signed_qty.abs();
                     let entry_price = snapshot
                         .position_entry_prices
@@ -190,11 +194,14 @@ impl Strategy for TrendStrategy {
                         .copied()
                         .filter(|price| *price > 0.0)
                         .unwrap_or(mid_price);
-                    let should_adopt = state.position.map(|position| {
-                        position.side != side
-                            || (position.quantity - quantity).abs() > 1e-12
-                            || (position.entry_price - entry_price).abs() > 1e-9
-                    }).unwrap_or(true);
+                    let should_adopt = state
+                        .position
+                        .map(|position| {
+                            position.side != side
+                                || (position.quantity - quantity).abs() > 1e-12
+                                || (position.entry_price - entry_price).abs() > 1e-9
+                        })
+                        .unwrap_or(true);
                     if should_adopt {
                         state.position = Some(PositionState {
                             side,

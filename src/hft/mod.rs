@@ -3,9 +3,21 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::time::Duration;
 
+mod binance_alpha;
 mod scanner;
+mod universe;
+
+pub use binance_alpha::BinanceAlphaHub;
+#[allow(unused_imports)]
+pub use binance_alpha::binance_futures_symbol;
 
 pub use scanner::run_market_scan;
+#[allow(unused_imports)]
+pub use universe::{
+    bbo_from_order_book, discover_perp_ids, max_markets_for_standard_budget, order_book_from_bbo,
+    resolve_live_universe, resolve_quoting_market_ids, select_quoting_universe, LiveUniverse,
+    UniverseMarket, UniverseSelectParams,
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct BboUpdate {

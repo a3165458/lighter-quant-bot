@@ -1,6 +1,10 @@
 pub mod dca_strategy;
 pub mod grid_strategy;
+pub mod inventory_bias;
+pub mod market_making;
+pub mod rolling;
 pub mod trend_strategy;
+pub mod vol_obi;
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -52,9 +56,7 @@ pub fn create_strategy(settings: &Config) -> Result<Box<dyn Strategy>> {
         let mode_raw = settings
             .get_string("trading.strategies.grid_trading.inventory_mode")
             .unwrap_or_else(|_| "hard".to_string());
-        if mode_raw.trim().eq_ignore_ascii_case("research_nocap") {
-            anyhow::bail!("实盘配置不允许 inventory_mode=research_nocap（研究专用）");
-        }
+        reject_live_research_nocap(&mode_raw, "inventory_mode")?;
         let mode = grid_strategy::InventoryMode::parse(&mode_raw)?;
         let soft_cap = settings
             .get_float("trading.strategies.grid_trading.soft_cap_grids")
@@ -113,10 +115,110 @@ pub fn create_strategy(settings: &Config) -> Result<Box<dyn Strategy>> {
             .with_adx_filter(adx_threshold, adx_period)
             .with_slope_confirm(confirm_min, confirm_lookback),
         ))
+    } else if settings
+        .get_bool("trading.strategies.market_making.enabled")
+        .unwrap_or(false)
+    {
+        Ok(Box::new(build_mm_from_settings(settings)?))
     } else {
         // Default to grid strategy
         Ok(Box::new(grid_strategy::GridStrategy::new(10, 100.0, 0.02)))
     }
+}
+
+fn reject_live_research_nocap(raw: &str, field: &str) -> Result<()> {
+    if raw.trim().eq_ignore_ascii_case("research_nocap") {
+        anyhow::bail!("实盘配置不允许 {field}=research_nocap（研究专用）");
+    }
+    Ok(())
+}
+
+fn mm_params_from_settings(settings: &Config) -> market_making::MmQuoteParams {
+    market_making::MmQuoteParams {
+        bid_spread: settings
+            .get_float("trading.strategies.market_making.bid_spread")
+            .unwrap_or(0.001),
+        ask_spread: settings
+            .get_float("trading.strategies.market_making.ask_spread")
+            .unwrap_or(0.001),
+        order_notional: settings
+            .get_float("trading.strategies.market_making.order_notional")
+            .or_else(|_| settings.get_float("trading.strategies.market_making.order_amount"))
+            .unwrap_or(50.0),
+        inventory_skew: settings
+            .get_float("trading.strategies.market_making.inventory_skew")
+            .unwrap_or(0.5),
+        inventory_target: settings
+            .get_float("trading.strategies.market_making.inventory_target")
+            .unwrap_or(0.01),
+        max_inventory: settings
+            .get_float("trading.strategies.market_making.max_inventory")
+            .unwrap_or(0.05),
+        min_requote_secs: settings
+            .get_int("trading.strategies.market_making.min_requote_secs")
+            .unwrap_or(10),
+    }
+}
+
+fn vol_mm_settings_from_config(settings: &Config) -> market_making::VolObiMmSettings {
+    let mut cfg = market_making::VolObiMmSettings::default();
+    if let Ok(raw) = settings.get_string("trading.strategies.market_making.alpha_source") {
+        if let Ok(src) = market_making::AlphaSource::parse(&raw) {
+            cfg.alpha_source = src;
+        }
+    }
+    if let Ok(v) = settings.get_float("trading.strategies.market_making.alpha_stale_secs") {
+        cfg.alpha_stale_secs = v;
+    }
+    if let Ok(v) = settings.get_float("trading.strategies.market_making.vol_obi.window_steps") {
+        cfg.vol_obi.window_steps = v.max(2.0) as usize;
+    }
+    if let Ok(v) = settings.get_int("trading.strategies.market_making.vol_obi.step_ns") {
+        cfg.vol_obi.step_ns = v.max(1);
+    }
+    if let Ok(v) = settings.get_float("trading.strategies.market_making.vol_obi.vol_to_half_spread")
+    {
+        cfg.vol_obi.vol_to_half_spread = v;
+    }
+    if let Ok(v) = settings.get_float("trading.strategies.market_making.vol_obi.min_half_spread_bps")
+    {
+        cfg.vol_obi.min_half_spread_bps = v;
+    }
+    if let Ok(v) = settings.get_float("trading.strategies.market_making.vol_obi.c1_ticks") {
+        cfg.vol_obi.c1_ticks = v;
+    }
+    if let Ok(v) = settings.get_float("trading.strategies.market_making.vol_obi.skew") {
+        cfg.vol_obi.skew = v;
+    }
+    if let Ok(v) = settings.get_float("trading.strategies.market_making.vol_obi.looking_depth") {
+        cfg.vol_obi.looking_depth = v;
+    }
+    if let Ok(v) = settings.get_int("trading.strategies.market_making.vol_obi.min_warmup_samples") {
+        cfg.vol_obi.min_warmup_samples = v.max(1);
+    }
+    cfg
+}
+
+fn quote_engine_from_settings(settings: &Config) -> market_making::QuoteEngine {
+    settings
+        .get_string("trading.strategies.market_making.quote_engine")
+        .ok()
+        .and_then(|raw| market_making::QuoteEngine::parse(&raw).ok())
+        .unwrap_or(market_making::QuoteEngine::VolObi)
+}
+
+fn build_mm_from_settings(settings: &Config) -> Result<market_making::MarketMakingStrategy> {
+    let mode_raw = settings
+        .get_string("trading.strategies.market_making.inventory_mode")
+        .unwrap_or_else(|_| "hard".to_string());
+    reject_live_research_nocap(&mode_raw, "inventory_mode")?;
+    let mode = grid_strategy::InventoryMode::parse(&mode_raw)?;
+    market_making::MarketMakingStrategy::with_engine(
+        mm_params_from_settings(settings),
+        mode,
+        quote_engine_from_settings(settings),
+        vol_mm_settings_from_config(settings),
+    )
 }
 
 /// 根据策略名称创建策略（用于回测）
@@ -235,6 +337,79 @@ pub fn create_strategy_with_params(name: &str, params: Option<&str>) -> Result<B
             Ok(Box::new(dca_strategy::DcaStrategy::new(
                 interval, amount, dip,
             )))
+        }
+        "market_making" | "mm" => {
+            let defaults = market_making::MmQuoteParams::default();
+            let params = market_making::MmQuoteParams {
+                bid_spread: kv
+                    .get("bid_spread")
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(defaults.bid_spread),
+                ask_spread: kv
+                    .get("ask_spread")
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(defaults.ask_spread),
+                order_notional: kv
+                    .get("order_notional")
+                    .or_else(|| kv.get("order_amount"))
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(defaults.order_notional),
+                inventory_skew: kv
+                    .get("inventory_skew")
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(defaults.inventory_skew),
+                inventory_target: kv
+                    .get("inventory_target")
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(defaults.inventory_target),
+                max_inventory: kv
+                    .get("max_inventory")
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(defaults.max_inventory),
+                min_requote_secs: kv
+                    .get("min_requote_secs")
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(defaults.min_requote_secs),
+            };
+            let mode = grid_strategy::InventoryMode::parse(
+                kv.get("inventory_mode")
+                    .map(|s| s.as_str())
+                    .unwrap_or("hard"),
+            )?;
+            let engine = kv
+                .get("quote_engine")
+                .map(|s| s.as_str())
+                .map(market_making::QuoteEngine::parse)
+                .transpose()?
+                .unwrap_or(market_making::QuoteEngine::VolObi);
+            let mut vol = market_making::VolObiMmSettings::default();
+            if let Some(raw) = kv.get("alpha_source") {
+                vol.alpha_source = market_making::AlphaSource::parse(raw)?;
+            }
+            if engine == market_making::QuoteEngine::Simple {
+                vol.alpha_source = market_making::AlphaSource::Local;
+            }
+            if let Some(v) = kv
+                .get("min_half_spread_bps")
+                .and_then(|s| s.parse::<f64>().ok())
+            {
+                vol.vol_obi.min_half_spread_bps = v;
+            }
+            if let Some(v) = kv
+                .get("vol_to_half_spread")
+                .and_then(|s| s.parse::<f64>().ok())
+            {
+                vol.vol_obi.vol_to_half_spread = v;
+            }
+            if let Some(v) = kv
+                .get("min_warmup_samples")
+                .and_then(|s| s.parse::<i64>().ok())
+            {
+                vol.vol_obi.min_warmup_samples = v.max(1);
+            }
+            Ok(Box::new(market_making::MarketMakingStrategy::with_engine(
+                params, mode, engine, vol,
+            )?))
         }
         _ => anyhow::bail!("未知策略: {}", name),
     }
