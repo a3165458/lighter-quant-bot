@@ -62,12 +62,13 @@ trading:
     risk_per_trade_percent: 1.5
 
 # Conservative round-trip profitability gate for live entries (1 bp = 0.01%).
-# These defaults reflect Lighter Standard's observed zero trading fee, while
-# reserving explicit budgets for execution drag and adverse selection.
+# These are floors, not advertised 0 maker/taker marketing fees. Keep a
+# 1 bp/side fee floor plus slippage and adverse selection unless fills
+# measure a true 0 fee at the fill level.
 profitability:
   enabled: true
-  entry_fee_bps: 0.0
-  exit_fee_bps: 0.0
+  entry_fee_bps: 1.0
+  exit_fee_bps: 1.0
   entry_slippage_bps: 2.0
   exit_slippage_bps: 2.0
   funding_bps: 0.5
@@ -98,7 +99,8 @@ backtest:
     interval: "1h"
 
   initial_capital: 10000
-  commission_percent: 0.0
+  # 2 bps per side floor — not a marketing 0-fee assumption.
+  commission_percent: 0.0002
   slippage_percent: 0.02
 
   reporting:

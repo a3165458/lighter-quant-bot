@@ -43,27 +43,30 @@ trading:
   max_open_orders: 8
 
   # Strategy configuration
-  # RH BTC 价格与主网 EVM Lighter 同源（已验证：07-09 后价差仅 0.03~0.07%，
-  # 且两边数据在相同窗口回测结果一致），因此直接采用主网 6.5 个月历史的调参结论。
-  # 2026-07-19 多窗口稳健性检验（1-3月/3-5月/5-6月/6-7月四段行情）：
-  #   grid_count=12, deviation=0.004 四个窗口全部为正，累计 +3.00%，最大回撤 1.78%
-  #   （保守备选: grid_count=8, deviation=0.004，最差窗口夏普更高但累计 +2.30%）
-  # 注意 07-04~07-08 RH 上线初期价格偏离主网最高 4%，该时段数据不可用于回测
+  # Live RH is trend_following only. Do not re-enable grid or vol_obi MM here:
+  # those paths overfit 1h params when fees are assumed 0 and can leave ghost
+  # working orders when open-order sync prefers local state.
+  # 2026-08-20: notional tightened after ~$215 loss on $1295 equity.
   strategies:
     grid_trading:
-      enabled: true
+      enabled: false
       grid_count: 12
       investment_per_grid: 30
       price_deviation: 0.004
 
     trend_following:
-      enabled: false
-      fast_ma: 10
+      enabled: true
+      fast_ma: 7
       slow_ma: 21
-      stop_loss: 0.03
-      take_profit: 0.04
+      stop_loss: 0.05
+      take_profit: 0.06
       trailing_stop: 0.0
-      notional: 1000
+      # Smaller than the previous 1000 notional; profitability gate is required.
+      notional: 30
+      adx_threshold: 0
+      adx_period: 14
+      confirm_slope_min: 0.005
+      confirm_lookback: 3
 
     # Two-sided maker. Default quote_engine=vol_obi is the djienne port:
     # realized-vol half-spread, book OBI, Binance depth alpha on crypto,
@@ -97,18 +100,19 @@ trading:
     max_total_position_percent: 200
     risk_per_trade_percent: 1.5
 
-# Conservative round-trip profitability gate for live entries (1 bp = 0.01%).
-# Recalibrate these values from fills before increasing order frequency.
+# Conservative RH-realistic friction floors for live entries (1 bp = 0.01%).
+# These are floors, not advertised 0 maker/taker marketing fees. Even if
+# Standard quotes 0, include a 1 bp/side fee floor plus slippage and
+# adverse selection. Recalibrate from fills before lowering any value.
 profitability:
   enabled: true
-  entry_fee_bps: 0.0
-  exit_fee_bps: 0.0
-  # RH Standard is 0 maker/taker. Gate only covers adverse + tiny slip.
-  entry_slippage_bps: 0.5
-  exit_slippage_bps: 0.5
+  entry_fee_bps: 1.0
+  exit_fee_bps: 1.0
+  entry_slippage_bps: 1.0
+  exit_slippage_bps: 1.0
   funding_bps: 0.5
-  adverse_selection_bps: 1.5
-  min_net_edge_bps: 0.5
+  adverse_selection_bps: 2.0
+  min_net_edge_bps: 1.0
 
 # Risk management
 risk:
@@ -134,7 +138,8 @@ backtest:
     interval: "1h"
 
   initial_capital: 10000
-  commission_percent: 0.0
+  # 2 bps per side floor — not a marketing 0-fee assumption.
+  commission_percent: 0.0002
   slippage_percent: 0.02
 
   reporting:

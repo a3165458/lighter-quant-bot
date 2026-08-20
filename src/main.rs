@@ -820,26 +820,54 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
         // Track daily PnL reset
         let mut last_daily_reset_day: u32 = (Utc::now().timestamp() / 86400) as u32;
         let mut first_cycle = true;
+        let mut empty_open_order_streak = 0u32;
         loop {
             interval.tick().await;
 
             // Always sync real open orders count first (fast, lightweight)
             match client_for_refresh.get_open_orders("all").await {
                 Ok(orders) => {
-                    let count = orders.len() as u32;
+                    let mut orders = orders;
+                    let mut count = orders.len() as u32;
                     let prev = open_orders_refresh.load(std::sync::atomic::Ordering::Relaxed);
-                    // A 0-result (or huge drop) while we still think orders are
-                    // live is usually an incomplete accountActiveOrders page.
-                    // Trusting it resets the gate and lets MM stack hundreds of quotes.
-                    let trusted = if count == 0 && prev > 0 {
-                        warn!(
-                            prev,
-                            "Ignoring open-order sync of 0 while local count is {prev}"
-                        );
-                        prev
-                    } else {
-                        count
-                    };
+                    // A single empty accountActiveOrders page can be truncated.
+                    // Confirm immediately, then reconcile local ghosts to the
+                    // exchange instead of ignoring 0 forever.
+                    let mut streak = empty_open_order_streak;
+                    if count == 0 && prev > 0 {
+                        match client_for_refresh.get_open_orders("all").await {
+                            Ok(retry) => {
+                                orders = retry;
+                                count = orders.len() as u32;
+                                if count == 0 {
+                                    streak = streak.max(1);
+                                }
+                            }
+                            Err(e) => {
+                                warn!("Open-order confirm fetch failed: {e}");
+                            }
+                        }
+                    }
+                    let decision =
+                        risk::order_sync::reconcile_open_order_count(count, prev, streak);
+                    empty_open_order_streak = decision.consecutive_empty;
+                    match decision.action {
+                        risk::order_sync::OpenOrderReconcileAction::HoldPendingConfirm => {
+                            warn!(
+                                prev,
+                                "Open-order sync 0 vs local {prev}; confirming before reconcile"
+                            );
+                        }
+                        risk::order_sync::OpenOrderReconcileAction::ReconcileToExchange => {
+                            warn!(
+                                prev,
+                                "Reconciling open-order count to exchange 0 (was local {prev})"
+                            );
+                            strategy_refresh.read().await.clear_filled_state();
+                        }
+                        risk::order_sync::OpenOrderReconcileAction::TrustExchange => {}
+                    }
+                    let trusted = decision.trusted_count;
                     open_orders_refresh.store(trusted, std::sync::atomic::Ordering::Relaxed);
                     if prev != trusted {
                         info!("📋 Open orders synced: {} → {} (real)", prev, trusted);
@@ -1232,7 +1260,8 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
                                 .iter()
                                 .map(|(_, _, size, entry, _)| size * entry)
                                 .sum();
-                            let all_vanished = curr_pos_map.is_empty() && !prev_positions.is_empty();
+                            let all_vanished =
+                                curr_pos_map.is_empty() && !prev_positions.is_empty();
                             match dashboard::pnl_accounting::realized_from_position_reductions(
                                 equity_change,
                                 unrealized_change,
@@ -1425,9 +1454,7 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
                             let delta = implied - ds.total_realized_pnl;
                             warn!(
                                 stored = ds.total_realized_pnl,
-                                implied,
-                                delta,
-                                "Reconciling realized PnL to equity identity"
+                                implied, delta, "Reconciling realized PnL to equity identity"
                             );
                             ds.total_realized_pnl = implied;
                             // A $100+ identity jump is almost always a snapshot
@@ -1677,7 +1704,10 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
                 }
                 lighter::types::WsMessage::BboUpdate(bbo) => {
                     store.update_order_book(hft::order_book_from_bbo(bbo));
-                    latest_bbos.lock().unwrap().insert(bbo.market_id, bbo.clone());
+                    latest_bbos
+                        .lock()
+                        .unwrap()
+                        .insert(bbo.market_id, bbo.clone());
                 }
                 lighter::types::WsMessage::TradeUpdate(trade) => {
                     store.add_trade(trade.clone());
@@ -1690,9 +1720,7 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
             let ds = dash_state.read().await;
             ds.universe_mode.clone()
         };
-        let auto_now = auto_universe
-            || dash_universe == "auto"
-            || dash_universe == "all";
+        let auto_now = auto_universe || dash_universe == "auto" || dash_universe == "all";
         if auto_now && !ui_auto_feed_started {
             ui_auto_feed_started = true;
             let extra: Vec<u32> = hft::discover_perp_ids(&all_markets)
@@ -2280,9 +2308,12 @@ async fn run_backtest(
         let guard = risk::profitability::ProfitabilityGuard::from_config(&settings)?;
         let cost_bps = guard.total_cost_bps();
         backtest_engine = backtest_engine.with_profitability(guard);
+        let commission = backtest::commission_rate_from_config(&settings);
+        backtest_engine = backtest_engine.with_commission(commission);
         info!(
-            "🧮 Profitability gate enabled (total cost {:.2} bps)",
-            cost_bps
+            "🧮 Profitability gate enabled (total cost {:.2} bps); commission floor {:.2} bps/side",
+            cost_bps,
+            commission * 10_000.0
         );
     }
 
@@ -2323,20 +2354,22 @@ async fn run_optimize(
     info!("   Loaded {} candles", historical_data.len());
 
     // 收益门槛 parity：--config 指定与实盘相同的 yaml 时，参数扫描也拒绝净收益不足的入场
-    let profitability = if let Some(cfg) = config_path {
+    let (profitability, commission) = if let Some(cfg) = config_path {
         let settings = Config::builder()
             .add_source(config::File::with_name(cfg))
             .build()
             .context("Failed to load config")?;
         let guard = risk::profitability::ProfitabilityGuard::from_config(&settings)?;
         let cost_bps = guard.total_cost_bps();
+        let commission = backtest::commission_rate_from_config(&settings);
         info!(
-            "🧮 Profitability gate enabled (total cost {:.2} bps)",
-            cost_bps
+            "🧮 Profitability gate enabled (total cost {:.2} bps); commission floor {:.2} bps/side",
+            cost_bps,
+            commission * 10_000.0
         );
-        Some(guard)
+        (Some(guard), Some(commission))
     } else {
-        None
+        (None, None)
     };
 
     // Define parameter grid based on strategy type
@@ -2427,6 +2460,9 @@ async fn run_optimize(
         if let Some(guard) = &profitability {
             engine = engine.with_profitability(guard.clone());
         }
+        if let Some(rate) = commission {
+            engine = engine.with_commission(rate);
+        }
         let result = engine.run(bt_strategy).await?;
 
         results_vec.push(OptResult {
@@ -2508,6 +2544,9 @@ async fn run_optimize(
         let mut engine = backtest::engine::BacktestEngine::new(initial_capital, historical_data);
         if let Some(guard) = &profitability {
             engine = engine.with_profitability(guard.clone());
+        }
+        if let Some(rate) = commission {
+            engine = engine.with_commission(rate);
         }
         let result = engine.run(bt_strategy).await?;
         let best_dir = format!("{}/best", opt_dir);

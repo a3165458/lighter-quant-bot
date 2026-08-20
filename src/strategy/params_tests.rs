@@ -175,8 +175,9 @@ async fn factory_mm_emits_two_sided_maker_quotes() {
     let snap = snapshot("BTC", 1_700_000_000, 100.0);
     let sigs = s.evaluate(&snap).await.unwrap().expect("quotes");
     assert_eq!(sigs.len(), 2);
-    assert!(sigs.iter().all(|sig| sig.order_type
-        == crate::lighter::types::OrderType::Limit));
+    assert!(sigs
+        .iter()
+        .all(|sig| sig.order_type == crate::lighter::types::OrderType::Limit));
     let mid = 100.0;
     let buy = sigs
         .iter()
@@ -204,6 +205,23 @@ fn live_loop_applies_open_order_and_profitability_gates_to_all_signals() {
     assert!(
         !src.contains("bypass max_open_orders"),
         "MM must not carve out an open-order bypass"
+    );
+}
+
+#[test]
+fn live_loop_reconciles_empty_exchange_open_orders_instead_of_ignoring() {
+    let src = include_str!("../main.rs");
+    assert!(
+        src.contains("reconcile_open_order_count"),
+        "live path must call the shipped open-order reconciler"
+    );
+    assert!(
+        src.contains("ReconcileToExchange"),
+        "live path must reset local ghosts when exchange is confirmed empty"
+    );
+    assert!(
+        !src.contains("Ignoring open-order sync of 0"),
+        "must not keep a ghost working order by ignoring exchange 0 forever"
     );
 }
 
