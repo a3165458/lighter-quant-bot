@@ -175,8 +175,9 @@ async fn factory_mm_emits_two_sided_maker_quotes() {
     let snap = snapshot("BTC", 1_700_000_000, 100.0);
     let sigs = s.evaluate(&snap).await.unwrap().expect("quotes");
     assert_eq!(sigs.len(), 2);
-    assert!(sigs.iter().all(|sig| sig.order_type
-        == crate::lighter::types::OrderType::Limit));
+    assert!(sigs
+        .iter()
+        .all(|sig| sig.order_type == crate::lighter::types::OrderType::Limit));
     let mid = 100.0;
     let buy = sigs
         .iter()
@@ -204,6 +205,147 @@ fn live_loop_applies_open_order_and_profitability_gates_to_all_signals() {
     assert!(
         !src.contains("bypass max_open_orders"),
         "MM must not carve out an open-order bypass"
+    );
+}
+
+#[test]
+fn live_loop_reconciles_empty_exchange_open_orders_instead_of_ignoring() {
+    let src = include_str!("../main.rs");
+    assert!(
+        src.contains("reconcile_open_order_count"),
+        "live path must call the shipped open-order reconciler"
+    );
+    assert!(
+        src.contains("ReconcileToExchange"),
+        "live path must reset local ghosts when exchange is confirmed empty"
+    );
+    assert!(
+        !src.contains("Ignoring open-order sync of 0"),
+        "must not keep a ghost working order by ignoring exchange 0 forever"
+    );
+}
+
+#[test]
+fn shipped_robinhood_yaml_creates_trend_only_and_does_not_quote_mm() {
+    let settings = Config::builder()
+        .add_source(config::File::with_name("config/settings.robinhood.yaml"))
+        .build()
+        .expect("rh yaml");
+    let s = create_strategy(&settings).expect("rh strategy");
+    assert_eq!(s.name(), "trend_following");
+}
+
+#[tokio::test]
+async fn armed_maker_volume_overlay_quotes_btc_only_and_keeps_trend_name() {
+    let settings = Config::builder()
+        .add_source(config::File::with_name("config/settings.robinhood.yaml"))
+        .set_override("trading.strategies.maker_volume.enabled", true)
+        .unwrap()
+        .set_override("trading.strategies.maker_volume.allow_quotes", true)
+        .unwrap()
+        .build()
+        .expect("armed overlay");
+    let s = create_strategy(&settings).expect("overlay");
+    assert_eq!(s.name(), "trend_following");
+    let btc = snapshot("BTC", 1_700_000_000, 70_000.0);
+    let sigs = s.evaluate(&btc).await.unwrap().expect("btc maker quotes");
+    assert!(sigs.iter().any(|sig| sig.reason.starts_with("MM ")));
+    assert!(sigs.iter().all(|sig| sig.market_id == 1));
+
+    let mut eth = snapshot("ETH", 1_700_000_000, 3_500.0);
+    if let Some(book) = eth.order_books.get_mut("ETH") {
+        book.market_id = 0;
+    }
+    let eth_sigs = s.evaluate(&eth).await.unwrap();
+    let mm_eth = eth_sigs
+        .as_ref()
+        .map(|v| {
+            v.iter()
+                .any(|sig| sig.reason.starts_with("MM ") && sig.market_id == 0)
+        })
+        .unwrap_or(false);
+    assert!(!mm_eth, "overlay must not spray non-BTC names");
+}
+
+#[tokio::test]
+async fn persisted_trend_picks_up_armed_yaml_overlay_without_deleting_strategy_config() {
+    let persisted = "fast_ma=7,slow_ma=21,stop_loss=0.05,take_profit=0.06,notional=30";
+    let armed = Config::builder()
+        .add_source(config::File::with_name("config/settings.robinhood.yaml"))
+        .set_override("trading.strategies.maker_volume.enabled", true)
+        .unwrap()
+        .set_override("trading.strategies.maker_volume.allow_quotes", true)
+        .unwrap()
+        .build()
+        .expect("armed yaml");
+    let overlaid =
+        create_strategy_with_params_and_settings("trend_following", Some(persisted), Some(&armed))
+            .expect("persisted trend + armed yaml");
+    assert_eq!(overlaid.name(), "trend_following");
+    assert!(
+        overlaid.has_maker_volume_overlay(),
+        "saved trend_following must still wrap SplitBook when yaml is armed"
+    );
+    let sigs = overlaid
+        .evaluate(&snapshot("BTC", 1_700_000_000, 70_000.0))
+        .await
+        .unwrap()
+        .expect("overlay would quote");
+    assert!(sigs.iter().any(|sig| sig.reason.starts_with("MM ")));
+
+    let disarmed = Config::builder()
+        .add_source(config::File::with_name("config/settings.robinhood.yaml"))
+        .build()
+        .expect("shipped yaml");
+    let plain = create_strategy_with_params_and_settings(
+        "trend_following",
+        Some(persisted),
+        Some(&disarmed),
+    )
+    .expect("persisted trend + flags false");
+    assert_eq!(plain.name(), "trend_following");
+    assert!(
+        !plain.has_maker_volume_overlay(),
+        "flags false must keep a plain trend (no overlay)"
+    );
+    let quiet = plain
+        .evaluate(&snapshot("BTC", 1_700_000_000, 70_000.0))
+        .await
+        .unwrap();
+    let mm = quiet
+        .as_ref()
+        .map(|v| v.iter().any(|sig| sig.reason.starts_with("MM ")))
+        .unwrap_or(false);
+    assert!(!mm);
+}
+
+#[test]
+fn live_loop_refuses_persisted_mm_unless_maker_volume_is_armed() {
+    let src = include_str!("../main.rs");
+    assert!(
+        src.contains("refuse_persisted_mm"),
+        "live start must ignore a leftover market_making strategy_config"
+    );
+    assert!(
+        src.contains("create_strategy_with_params_and_settings"),
+        "live persist path must pass yaml so an armed overlay attaches"
+    );
+}
+
+#[test]
+fn live_loop_does_not_record_order_placement_as_fill_volume() {
+    let src = include_str!("../main.rs");
+    assert!(
+        src.contains("record_order_placement"),
+        "successful place_order must record placement notional separately"
+    );
+    assert!(
+        !src.contains("Determine action: Open (new position) or Add"),
+        "must not write Open/Add into trade_history on order placement"
+    );
+    assert!(
+        src.contains("\"fill\": true"),
+        "account-book Open/Add/Close rows must be tagged as fills"
     );
 }
 

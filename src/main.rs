@@ -333,9 +333,19 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
                 }
             }
         }
-        fetched.ok_or_else(|| last_err.unwrap())
-    }
-    .context("Failed to fetch account info")?;
+        match fetched {
+            Some(acct) => acct,
+            None => {
+                warn!(
+                    "Failed to fetch account info after retries ({}); continuing with an empty snapshot",
+                    last_err
+                        .map(|e| e.to_string())
+                        .unwrap_or_else(|| "unknown error".into())
+                );
+                lighter::account::empty_account_info()
+            }
+        }
+    };
     let equity = account.total_equity;
     let free_balance = account.balances.first().map(|b| b.free).unwrap_or(0.0);
     info!(
@@ -498,6 +508,7 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
         pnl_history: vec![(Utc::now().timestamp(), 0.0)],
         total_volume: 0.0,
         total_closed_trades: 0,
+        total_order_notional: 0.0,
         strategy_params: {
             let mut m = std::collections::HashMap::new();
             m.insert(
@@ -558,7 +569,10 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
     // Restore persistent PnL data from disk
     if let Some(persisted) = dashboard::server::PersistentPnlData::load(&network_name) {
         let mut ds = dash_state.write().await;
-        ds.restore_pnl(&persisted);
+        if ds.restore_pnl(&persisted) {
+            ds.save_pnl();
+            info!("📂 Wrote corrected PnL counters (fill volume / closes / daily map)");
+        }
     }
 
     // Restore persistent strategy config from disk
@@ -638,17 +652,31 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
         let ds = dash_state.read().await;
         let has_saved_params = !ds.strategy_params.is_empty();
         if has_saved_params {
-            let params_str = ds
-                .strategy_params
-                .iter()
-                .map(|(k, v)| format!("{}={}", k, v))
-                .collect::<Vec<_>>()
-                .join(",");
-            info!(
-                "📂 Creating strategy from saved config: {} params={}",
-                ds.strategy_name, params_str
-            );
-            let strat = strategy::create_strategy_with_params(&ds.strategy_name, Some(&params_str))
+            if strategy::maker_volume::refuse_persisted_mm(&ds.strategy_name, &settings) {
+                warn!(
+                    "Refusing persisted {} — maker_volume is not armed; using yaml strategy",
+                    ds.strategy_name
+                );
+                Arc::new(tokio::sync::RwLock::new(
+                    strategy::create_strategy(&settings)
+                        .expect("Failed to create default strategy"),
+                ))
+            } else {
+                let params_str = ds
+                    .strategy_params
+                    .iter()
+                    .map(|(k, v)| format!("{}={}", k, v))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                info!(
+                    "📂 Creating strategy from saved config: {} params={}",
+                    ds.strategy_name, params_str
+                );
+                let strat = strategy::create_strategy_with_params_and_settings(
+                    &ds.strategy_name,
+                    Some(&params_str),
+                    Some(&settings),
+                )
                 .unwrap_or_else(|e| {
                     warn!(
                         "Failed to create strategy from saved params: {}, falling back to defaults",
@@ -656,7 +684,8 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
                     );
                     strategy::create_strategy(&settings).expect("Failed to create default strategy")
                 });
-            Arc::new(tokio::sync::RwLock::new(strat))
+                Arc::new(tokio::sync::RwLock::new(strat))
+            }
         } else {
             Arc::new(tokio::sync::RwLock::new(
                 strategy::create_strategy(&settings).context("Failed to initialize strategy")?,
@@ -820,26 +849,54 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
         // Track daily PnL reset
         let mut last_daily_reset_day: u32 = (Utc::now().timestamp() / 86400) as u32;
         let mut first_cycle = true;
+        let mut empty_open_order_streak = 0u32;
         loop {
             interval.tick().await;
 
             // Always sync real open orders count first (fast, lightweight)
             match client_for_refresh.get_open_orders("all").await {
                 Ok(orders) => {
-                    let count = orders.len() as u32;
+                    let mut orders = orders;
+                    let mut count = orders.len() as u32;
                     let prev = open_orders_refresh.load(std::sync::atomic::Ordering::Relaxed);
-                    // A 0-result (or huge drop) while we still think orders are
-                    // live is usually an incomplete accountActiveOrders page.
-                    // Trusting it resets the gate and lets MM stack hundreds of quotes.
-                    let trusted = if count == 0 && prev > 0 {
-                        warn!(
-                            prev,
-                            "Ignoring open-order sync of 0 while local count is {prev}"
-                        );
-                        prev
-                    } else {
-                        count
-                    };
+                    // A single empty accountActiveOrders page can be truncated.
+                    // Confirm immediately, then reconcile local ghosts to the
+                    // exchange instead of ignoring 0 forever.
+                    let mut streak = empty_open_order_streak;
+                    if count == 0 && prev > 0 {
+                        match client_for_refresh.get_open_orders("all").await {
+                            Ok(retry) => {
+                                orders = retry;
+                                count = orders.len() as u32;
+                                if count == 0 {
+                                    streak = streak.max(1);
+                                }
+                            }
+                            Err(e) => {
+                                warn!("Open-order confirm fetch failed: {e}");
+                            }
+                        }
+                    }
+                    let decision =
+                        risk::order_sync::reconcile_open_order_count(count, prev, streak);
+                    empty_open_order_streak = decision.consecutive_empty;
+                    match decision.action {
+                        risk::order_sync::OpenOrderReconcileAction::HoldPendingConfirm => {
+                            warn!(
+                                prev,
+                                "Open-order sync 0 vs local {prev}; confirming before reconcile"
+                            );
+                        }
+                        risk::order_sync::OpenOrderReconcileAction::ReconcileToExchange => {
+                            warn!(
+                                prev,
+                                "Reconciling open-order count to exchange 0 (was local {prev})"
+                            );
+                            strategy_refresh.read().await.clear_filled_state();
+                        }
+                        risk::order_sync::OpenOrderReconcileAction::TrustExchange => {}
+                    }
+                    let trusted = decision.trusted_count;
                     open_orders_refresh.store(trusted, std::sync::atomic::Ordering::Relaxed);
                     if prev != trusted {
                         info!("📋 Open orders synced: {} → {} (real)", prev, trusted);
@@ -1169,6 +1226,7 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
                         }
                     }
 
+                    let mut snapshot_trusted = true;
                     if !first_cycle && prev_equity > 0.0 {
                         // Check for meaningful position changes (size decreased or position closed)
                         let mut position_reductions: Vec<(
@@ -1232,7 +1290,8 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
                                 .iter()
                                 .map(|(_, _, size, entry, _)| size * entry)
                                 .sum();
-                            let all_vanished = curr_pos_map.is_empty() && !prev_positions.is_empty();
+                            let all_vanished =
+                                curr_pos_map.is_empty() && !prev_positions.is_empty();
                             match dashboard::pnl_accounting::realized_from_position_reductions(
                                 equity_change,
                                 unrealized_change,
@@ -1248,6 +1307,7 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
                                         all_vanished,
                                         "⏭️ Skipping realized PnL — account snapshot looks incomplete"
                                     );
+                                    snapshot_trusted = false;
                                     position_reductions.clear();
                                 }
                             }
@@ -1304,39 +1364,79 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
                                     "pnl": (pnl_share * 10000.0).round() / 10000.0,
                                     "action": close_type, // "Full Close" or "Partial Close"
                                     "duration_secs": duration_secs,
+                                    "fill": true,
                                 }));
                             }
+                        }
+                    }
+                    if snapshot_trusted && !first_cycle {
+                        for (symbol, (curr_side, curr_size, curr_entry)) in &curr_pos_map {
+                            let min_change = min_change_of(symbol);
+                            let (prev_side, prev_size) = match prev_positions.get(symbol) {
+                                Some((side, size, _)) => (*side, *size),
+                                None => (*curr_side, 0.0),
+                            };
+                            let same_side = prev_side == *curr_side;
+                            let Some(action) =
+                                dashboard::pnl_accounting::position_increase_fill_action(
+                                    prev_size, *curr_size, same_side, min_change,
+                                )
+                            else {
+                                continue;
+                            };
+                            let market_id = market_id_of(symbol).unwrap_or(0);
+                            close_events.push(serde_json::json!({
+                                "timestamp": close_timestamp.to_rfc3339(),
+                                "symbol": symbol,
+                                "market_id": market_id,
+                                "side": format!("{:?}", curr_side),
+                                "price": curr_entry,
+                                "quantity": if same_side {
+                                    (*curr_size - prev_size).abs()
+                                } else {
+                                    *curr_size
+                                },
+                                "pnl": 0.0,
+                                "action": action,
+                                "fill": true,
+                            }));
                         }
                     }
                     first_cycle = false;
                     prev_equity = curr_equity;
                     prev_unrealized = curr_unrealized;
 
-                    let mut next_opened_at = position_opened_at.clone();
-                    next_opened_at.retain(|symbol, _| curr_pos_map.contains_key(symbol));
-                    for (symbol, (curr_side, curr_size, _)) in &curr_pos_map {
-                        let min_change = min_change_of(symbol);
-                        let should_reset = match prev_positions.get(symbol) {
-                            Some((prev_side, prev_size, _)) => {
-                                *prev_side != *curr_side || *prev_size < min_change
+                    if snapshot_trusted {
+                        let mut next_opened_at = position_opened_at.clone();
+                        next_opened_at.retain(|symbol, _| curr_pos_map.contains_key(symbol));
+                        for (symbol, (curr_side, curr_size, _)) in &curr_pos_map {
+                            let min_change = min_change_of(symbol);
+                            let should_reset = match prev_positions.get(symbol) {
+                                Some((prev_side, prev_size, _)) => {
+                                    *prev_side != *curr_side || *prev_size < min_change
+                                }
+                                None => *curr_size >= min_change,
+                            };
+                            if should_reset || !next_opened_at.contains_key(symbol) {
+                                next_opened_at.insert(symbol.clone(), close_timestamp);
                             }
-                            None => *curr_size >= min_change,
-                        };
-                        if should_reset || !next_opened_at.contains_key(symbol) {
-                            next_opened_at.insert(symbol.clone(), close_timestamp);
                         }
-                    }
-                    position_opened_at = next_opened_at;
+                        position_opened_at = next_opened_at;
 
-                    // Update position snapshot (rounded) for next cycle
-                    prev_positions.clear();
-                    for p in &acct.positions {
-                        if p.size.abs() > 1e-10 {
-                            let factor = 10_f64.powi(size_decimals_of(&p.symbol));
-                            let rounded_size = (p.size * factor).round() / factor;
-                            prev_positions
-                                .insert(p.symbol.clone(), (p.side, rounded_size, p.entry_price));
+                        // Update position snapshot (rounded) for next cycle
+                        prev_positions.clear();
+                        for p in &acct.positions {
+                            if p.size.abs() > 1e-10 {
+                                let factor = 10_f64.powi(size_decimals_of(&p.symbol));
+                                let rounded_size = (p.size * factor).round() / factor;
+                                prev_positions.insert(
+                                    p.symbol.clone(),
+                                    (p.side, rounded_size, p.entry_price),
+                                );
+                            }
                         }
+                    } else {
+                        warn!("Keeping previous position book — account snapshot looks incomplete");
                     }
 
                     // Update dashboard
@@ -1395,8 +1495,7 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
                             );
                         }
 
-                        // Record close events in trade history (lifetime volume/close
-                        // counters + shared ring-buffer limit live in push_trade).
+                        // Record exchange-confirmed fills only (Open/Add/Close).
                         let has_close_events = !close_events.is_empty();
                         for evt in close_events {
                             ds.push_trade(evt);
@@ -1425,9 +1524,7 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
                             let delta = implied - ds.total_realized_pnl;
                             warn!(
                                 stored = ds.total_realized_pnl,
-                                implied,
-                                delta,
-                                "Reconciling realized PnL to equity identity"
+                                implied, delta, "Reconciling realized PnL to equity identity"
                             );
                             ds.total_realized_pnl = implied;
                             // A $100+ identity jump is almost always a snapshot
@@ -1662,7 +1759,6 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
     let mut ui_auto_feed_started = auto_universe;
 
     // Main event loop
-    let mut trade_count: u64 = 0;
     let mut last_risk_update = std::time::Instant::now();
     while let Ok(msg) = ws_receiver.recv().await {
         // Update data store
@@ -1677,7 +1773,10 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
                 }
                 lighter::types::WsMessage::BboUpdate(bbo) => {
                     store.update_order_book(hft::order_book_from_bbo(bbo));
-                    latest_bbos.lock().unwrap().insert(bbo.market_id, bbo.clone());
+                    latest_bbos
+                        .lock()
+                        .unwrap()
+                        .insert(bbo.market_id, bbo.clone());
                 }
                 lighter::types::WsMessage::TradeUpdate(trade) => {
                     store.add_trade(trade.clone());
@@ -1690,9 +1789,7 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
             let ds = dash_state.read().await;
             ds.universe_mode.clone()
         };
-        let auto_now = auto_universe
-            || dash_universe == "auto"
-            || dash_universe == "all";
+        let auto_now = auto_universe || dash_universe == "auto" || dash_universe == "all";
         if auto_now && !ui_auto_feed_started {
             ui_auto_feed_started = true;
             let extra: Vec<u32> = hft::discover_perp_ids(&all_markets)
@@ -2080,7 +2177,6 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
                         .await
                     {
                         Ok(resp) => {
-                            trade_count += 1;
                             // Optimistically increment open orders counter
                             open_orders_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             info!(
@@ -2088,36 +2184,12 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
                                 resp.order_id, resp.status
                             );
 
-                            // Update dashboard
+                            // Update dashboard. Placement is not a fill — do not
+                            // write Open/Add into trade_history or headline volume.
                             let mut ds = dash_state.write().await;
-                            ds.total_trades = trade_count;
                             ds.open_orders =
                                 open_orders_count.load(std::sync::atomic::Ordering::Relaxed);
-                            // Determine action: Open (new position) or Add (increase existing)
-                            let action = {
-                                let has_position = ds.positions.iter().any(|p| {
-                                    p.get("symbol").and_then(|s| s.as_str()) == Some(&signal.symbol)
-                                });
-                                if has_position {
-                                    "Add"
-                                } else {
-                                    "Open"
-                                }
-                            };
-                            // Shared path with close events: updates lifetime volume
-                            // and trims to TRADE_HISTORY_LIMIT (was inconsistently 100 here).
-                            // Disk flush happens on close events / periodic equity save.
-                            ds.push_trade(serde_json::json!({
-                                "timestamp": signal.timestamp.to_rfc3339(),
-                                "symbol": signal.symbol,
-                                "market_id": signal.market_id,
-                                "side": format!("{:?}", signal.side),
-                                "price": signal.price,
-                                "quantity": signal.quantity,
-                                "pnl": 0.0,
-                                "action": action,
-                                "reason": signal.reason,
-                            }));
+                            ds.record_order_placement(signal.price, signal.quantity);
                         }
                         Err(e) => {
                             error!("❌ Order failed: {}", e);
@@ -2195,13 +2267,14 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
                         "🔄 Strategy switch: {} → {}",
                         current_name, new_strategy_name
                     );
-                    match crate::strategy::create_strategy_with_params(
+                    match crate::strategy::create_strategy_with_params_and_settings(
                         &new_strategy_name,
                         if params_str.is_empty() {
                             None
                         } else {
                             Some(&params_str)
                         },
+                        Some(&settings),
                     ) {
                         Ok(new_strat) => {
                             *strategy.write().await = new_strat;
@@ -2219,9 +2292,10 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
                 } else if !params_str.is_empty() {
                     info!("🔧 Strategy params update: {:?}", params);
                     // Recreate with new params
-                    match crate::strategy::create_strategy_with_params(
+                    match crate::strategy::create_strategy_with_params_and_settings(
                         &current_name,
                         Some(&params_str),
+                        Some(&settings),
                     ) {
                         Ok(new_strat) => {
                             *strategy.write().await = new_strat;
@@ -2280,9 +2354,12 @@ async fn run_backtest(
         let guard = risk::profitability::ProfitabilityGuard::from_config(&settings)?;
         let cost_bps = guard.total_cost_bps();
         backtest_engine = backtest_engine.with_profitability(guard);
+        let commission = backtest::commission_rate_from_config(&settings);
+        backtest_engine = backtest_engine.with_commission(commission);
         info!(
-            "🧮 Profitability gate enabled (total cost {:.2} bps)",
-            cost_bps
+            "🧮 Profitability gate enabled (total cost {:.2} bps); commission floor {:.2} bps/side",
+            cost_bps,
+            commission * 10_000.0
         );
     }
 
@@ -2323,20 +2400,22 @@ async fn run_optimize(
     info!("   Loaded {} candles", historical_data.len());
 
     // 收益门槛 parity：--config 指定与实盘相同的 yaml 时，参数扫描也拒绝净收益不足的入场
-    let profitability = if let Some(cfg) = config_path {
+    let (profitability, commission) = if let Some(cfg) = config_path {
         let settings = Config::builder()
             .add_source(config::File::with_name(cfg))
             .build()
             .context("Failed to load config")?;
         let guard = risk::profitability::ProfitabilityGuard::from_config(&settings)?;
         let cost_bps = guard.total_cost_bps();
+        let commission = backtest::commission_rate_from_config(&settings);
         info!(
-            "🧮 Profitability gate enabled (total cost {:.2} bps)",
-            cost_bps
+            "🧮 Profitability gate enabled (total cost {:.2} bps); commission floor {:.2} bps/side",
+            cost_bps,
+            commission * 10_000.0
         );
-        Some(guard)
+        (Some(guard), Some(commission))
     } else {
-        None
+        (None, None)
     };
 
     // Define parameter grid based on strategy type
@@ -2427,6 +2506,9 @@ async fn run_optimize(
         if let Some(guard) = &profitability {
             engine = engine.with_profitability(guard.clone());
         }
+        if let Some(rate) = commission {
+            engine = engine.with_commission(rate);
+        }
         let result = engine.run(bt_strategy).await?;
 
         results_vec.push(OptResult {
@@ -2508,6 +2590,9 @@ async fn run_optimize(
         let mut engine = backtest::engine::BacktestEngine::new(initial_capital, historical_data);
         if let Some(guard) = &profitability {
             engine = engine.with_profitability(guard.clone());
+        }
+        if let Some(rate) = commission {
+            engine = engine.with_commission(rate);
         }
         let result = engine.run(bt_strategy).await?;
         let best_dir = format!("{}/best", opt_dir);

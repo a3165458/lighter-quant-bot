@@ -113,11 +113,12 @@ trading:
       investment_per_grid: 8  # 每格投资 ($)
       price_deviation: 0.012  # 价格偏差 (1.2%)
 
-# 实盘开仓的保守往返成本模型，单位 bps（1 bp = 0.01%）
+# 实盘开仓的保守往返成本地板，单位 bps（1 bp = 0.01%）
+# 这些是摩擦下限，不是交易所宣传的 0 maker/taker。
 profitability:
   enabled: true
-  entry_fee_bps: 0
-  exit_fee_bps: 0
+  entry_fee_bps: 1
+  exit_fee_bps: 1
   entry_slippage_bps: 2
   exit_slippage_bps: 2
   funding_bps: 0.5
@@ -184,6 +185,15 @@ cargo run --release -- scan --url https://api.rh.lighter.xyz \
 | 🤖 AI Lab | 回测引擎 + AI 参数优化 + OpenCode GLM5 联合回测 |
 
 ## 📝 更新历史 / 回测记录
+
+### 2026-08-20
+
+- **诚实摩擦、订单同步、重启误开仓、账户解析**
+  - 实盘 `profitability` 与回测 `commission_percent` 不再默认 0；按 RH 现实摩擦保留费用/滑点/逆选择地板，而不是宣传的 0 maker/taker
+  - 交易所回报 0 挂单且本地仍有幽灵单时，确认后以交易所为准并对账，不再无限忽略空同步
+  - 重启不再把当前仍交叉的 EMA Regime 当成新开仓；已有持仓时绝不 seed
+  - `/api/v1/account` 兼容官方 `accounts` / 包装对象 / 数字字段；空响应只打一次日志并继续跑风控循环
+  - Robinhood 实盘保持仅启用 `trend_following`，并下调名义金额
 
 ### 2026-08-16
 

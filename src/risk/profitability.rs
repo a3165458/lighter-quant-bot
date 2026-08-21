@@ -3,6 +3,16 @@ use config::Config;
 
 const CONFIG_PREFIX: &str = "profitability";
 
+/// Conservative friction floors used when a key is omitted.
+/// Advertised 0 maker/taker is marketing, not a measured fill-level fee of 0.
+pub const DEFAULT_ENTRY_FEE_BPS: f64 = 1.0;
+pub const DEFAULT_EXIT_FEE_BPS: f64 = 1.0;
+pub const DEFAULT_ENTRY_SLIPPAGE_BPS: f64 = 1.0;
+pub const DEFAULT_EXIT_SLIPPAGE_BPS: f64 = 1.0;
+pub const DEFAULT_FUNDING_BPS: f64 = 0.5;
+pub const DEFAULT_ADVERSE_SELECTION_BPS: f64 = 2.0;
+pub const DEFAULT_MIN_NET_EDGE_BPS: f64 = 1.0;
+
 /// Strategy-provided economics for one proposed order.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SignalEconomics {
@@ -54,13 +64,21 @@ impl ProfitabilityGuard {
     pub fn from_config(settings: &Config) -> Result<Self> {
         let guard = Self {
             enabled: get_bool(settings, "enabled", true),
-            entry_fee_bps: get_float(settings, "entry_fee_bps", 0.0),
-            exit_fee_bps: get_float(settings, "exit_fee_bps", 0.0),
-            entry_slippage_bps: get_float(settings, "entry_slippage_bps", 0.0),
-            exit_slippage_bps: get_float(settings, "exit_slippage_bps", 0.0),
-            funding_bps: get_float(settings, "funding_bps", 0.0),
-            adverse_selection_bps: get_float(settings, "adverse_selection_bps", 0.0),
-            min_net_edge_bps: get_float(settings, "min_net_edge_bps", 0.0),
+            entry_fee_bps: get_float(settings, "entry_fee_bps", DEFAULT_ENTRY_FEE_BPS),
+            exit_fee_bps: get_float(settings, "exit_fee_bps", DEFAULT_EXIT_FEE_BPS),
+            entry_slippage_bps: get_float(
+                settings,
+                "entry_slippage_bps",
+                DEFAULT_ENTRY_SLIPPAGE_BPS,
+            ),
+            exit_slippage_bps: get_float(settings, "exit_slippage_bps", DEFAULT_EXIT_SLIPPAGE_BPS),
+            funding_bps: get_float(settings, "funding_bps", DEFAULT_FUNDING_BPS),
+            adverse_selection_bps: get_float(
+                settings,
+                "adverse_selection_bps",
+                DEFAULT_ADVERSE_SELECTION_BPS,
+            ),
+            min_net_edge_bps: get_float(settings, "min_net_edge_bps", DEFAULT_MIN_NET_EDGE_BPS),
         };
         guard.validate()?;
         Ok(guard)
@@ -140,6 +158,26 @@ impl ProfitabilityGuard {
             + self.exit_slippage_bps
             + self.funding_bps
             + self.adverse_selection_bps
+    }
+
+    pub fn entry_fee_bps(&self) -> f64 {
+        self.entry_fee_bps
+    }
+
+    pub fn exit_fee_bps(&self) -> f64 {
+        self.exit_fee_bps
+    }
+
+    pub fn entry_slippage_bps(&self) -> f64 {
+        self.entry_slippage_bps
+    }
+
+    pub fn exit_slippage_bps(&self) -> f64 {
+        self.exit_slippage_bps
+    }
+
+    pub fn adverse_selection_bps(&self) -> f64 {
+        self.adverse_selection_bps
     }
 
     fn validate(&self) -> Result<()> {

@@ -11,6 +11,7 @@ fn trade(timestamp: &str, price: f64) -> serde_json::Value {
         "side": "Buy",
         "price": price,
         "quantity": 0.001,
+        "fill": true,
     })
 }
 
@@ -109,6 +110,28 @@ fn submitted_orders_are_not_mislabeled_as_fills() {
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].kind, DashboardEventKind::Order);
     assert!(events[0].detail.starts_with("Open Sell BTC @ 62834.50"));
+}
+
+#[test]
+fn confirmed_open_fill_is_a_fill_event() {
+    let mut tracker = EventTracker::default();
+    tracker.observe(&EventSnapshot::default(), 1_785_730_000_000);
+
+    let filled = EventSnapshot {
+        trade_history: vec![json!({
+            "timestamp": "2026-08-03T05:00:03Z",
+            "symbol": "BTC",
+            "side": "Buy",
+            "price": 62_834.5,
+            "quantity": 0.00048,
+            "action": "Open",
+            "fill": true,
+        })],
+        ..EventSnapshot::default()
+    };
+    let events = tracker.observe(&filled, 1_785_730_003_000);
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].kind, DashboardEventKind::Fill);
 }
 
 #[test]

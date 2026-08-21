@@ -153,7 +153,9 @@ async fn evaluate_emits_maker_limit_signals_with_edge() {
         .expect("two-sided quotes");
     assert_eq!(signals.len(), 2);
     assert!(signals.iter().all(|s| s.order_type == OrderType::Limit));
-    assert!(signals.iter().all(|s| s.expected_edge_bps.unwrap_or(0.0) > 0.0));
+    assert!(signals
+        .iter()
+        .all(|s| s.expected_edge_bps.unwrap_or(0.0) > 0.0));
     let buy = signals.iter().find(|s| s.side == Side::Buy).unwrap();
     let sell = signals.iter().find(|s| s.side == Side::Sell).unwrap();
     let mid = (99.5 + 100.5) / 2.0;
@@ -178,9 +180,7 @@ fn requote_after_interval_requires_meaningful_mid_move() {
         !should_requote(100.0, 0.0, t0, 100.001, 0.0, t1, 0.001, 10),
         "0.1 bps tick is not enough to replace"
     );
-    assert!(should_requote(
-        100.0, 0.0, t0, 100.05, 0.0, t1, 0.001, 10
-    ));
+    assert!(should_requote(100.0, 0.0, t0, 100.05, 0.0, t1, 0.001, 10));
 }
 
 #[tokio::test]
@@ -197,11 +197,7 @@ async fn mm_limit_signals_are_visible_to_profitability_gate() {
 
     let strategy = MarketMakingStrategy::new(params(), InventoryMode::Hard).unwrap();
     let snap = snapshot_from_book(book("BTC", 1, 99.5, 100.5, 2.0, 2.0), 0.0);
-    let signals = strategy
-        .evaluate(&snap)
-        .await
-        .unwrap()
-        .expect("quotes");
+    let signals = strategy.evaluate(&snap).await.unwrap().expect("quotes");
     let guard = ProfitabilityGuard::from_config(
         &Config::builder()
             .set_override("profitability.enabled", true)
@@ -248,9 +244,20 @@ async fn vol_obi_quotes_after_warmup_sit_outside_mid() {
     let strategy = warm_vol_strategy();
     let mut last = None;
     for i in 0..16 {
-        let mut b = book("BTC", 1, 99.5 + i as f64 * 0.01, 100.5 + i as f64 * 0.01, 2.0, 2.0);
+        let mut b = book(
+            "BTC",
+            1,
+            99.5 + i as f64 * 0.01,
+            100.5 + i as f64 * 0.01,
+            2.0,
+            2.0,
+        );
         b.timestamp = Utc.timestamp_opt(1_700_000_000 + i, 0).unwrap();
-        if let Some(signals) = strategy.evaluate(&snapshot_from_book(b, 0.0)).await.unwrap() {
+        if let Some(signals) = strategy
+            .evaluate(&snapshot_from_book(b, 0.0))
+            .await
+            .unwrap()
+        {
             last = Some(signals);
         }
     }
@@ -269,9 +276,20 @@ async fn vol_obi_does_not_join_tight_bbo() {
     let mut last = None;
     for i in 0..16 {
         // 2 bps book — simple PMM would join; vol_obi stays at its half-spread floor.
-        let mut b = book("ETH", 0, 1999.8 + i as f64 * 0.01, 2000.2 + i as f64 * 0.01, 1.0, 1.0);
+        let mut b = book(
+            "ETH",
+            0,
+            1999.8 + i as f64 * 0.01,
+            2000.2 + i as f64 * 0.01,
+            1.0,
+            1.0,
+        );
         b.timestamp = Utc.timestamp_opt(1_700_000_000 + i, 0).unwrap();
-        if let Some(signals) = strategy.evaluate(&snapshot_from_book(b, 0.0)).await.unwrap() {
+        if let Some(signals) = strategy
+            .evaluate(&snapshot_from_book(b, 0.0))
+            .await
+            .unwrap()
+        {
             last = Some(signals);
         }
     }
@@ -287,4 +305,49 @@ fn quote_engine_parse() {
     assert_eq!(QuoteEngine::parse("vol_obi").unwrap(), QuoteEngine::VolObi);
     assert_eq!(QuoteEngine::parse("simple").unwrap(), QuoteEngine::Simple);
     assert!(QuoteEngine::parse("avellaneda").is_err());
+}
+
+#[tokio::test]
+async fn maker_volume_disarmed_emits_no_quotes() {
+    let strategy = MarketMakingStrategy::new(params(), InventoryMode::Hard)
+        .unwrap()
+        .with_maker_volume(super::super::maker_volume::MakerVolumeConfig::default());
+    let sigs = strategy
+        .evaluate(&snapshot_from_book(
+            book("BTC", 1, 99.5, 100.5, 2.0, 2.0),
+            0.0,
+        ))
+        .await
+        .unwrap();
+    assert!(sigs.is_none(), "default flags must not start quoting");
+}
+
+#[tokio::test]
+async fn maker_volume_armed_skips_non_btc_and_blocks_long_full() {
+    let mut gates = super::super::maker_volume::MakerVolumeConfig::default();
+    gates.enabled = true;
+    gates.allow_quotes = true;
+    gates.max_position_notional = 60.0;
+    let strategy = MarketMakingStrategy::new(params(), InventoryMode::Hard)
+        .unwrap()
+        .with_maker_volume(gates);
+    let eth = strategy
+        .evaluate(&snapshot_from_book(
+            book("ETH", 0, 3499.0, 3501.0, 1.0, 1.0),
+            0.0,
+        ))
+        .await
+        .unwrap();
+    assert!(eth.is_none(), "BTC-only gate must skip ETH");
+
+    let long_full = strategy
+        .evaluate(&snapshot_from_book(
+            book("BTC", 1, 69_950.0, 70_050.0, 1.0, 1.0),
+            0.001,
+        ))
+        .await
+        .unwrap()
+        .expect("reducing ask");
+    assert!(long_full.iter().all(|s| s.side != Side::Buy));
+    assert!(long_full.iter().any(|s| s.side == Side::Sell));
 }
