@@ -226,6 +226,57 @@ fn live_loop_reconciles_empty_exchange_open_orders_instead_of_ignoring() {
 }
 
 #[test]
+fn shipped_robinhood_yaml_creates_trend_only_and_does_not_quote_mm() {
+    let settings = Config::builder()
+        .add_source(config::File::with_name("config/settings.robinhood.yaml"))
+        .build()
+        .expect("rh yaml");
+    let s = create_strategy(&settings).expect("rh strategy");
+    assert_eq!(s.name(), "trend_following");
+}
+
+#[tokio::test]
+async fn armed_maker_volume_overlay_quotes_btc_only_and_keeps_trend_name() {
+    let settings = Config::builder()
+        .add_source(config::File::with_name("config/settings.robinhood.yaml"))
+        .set_override("trading.strategies.maker_volume.enabled", true)
+        .unwrap()
+        .set_override("trading.strategies.maker_volume.allow_quotes", true)
+        .unwrap()
+        .build()
+        .expect("armed overlay");
+    let s = create_strategy(&settings).expect("overlay");
+    assert_eq!(s.name(), "trend_following");
+    let btc = snapshot("BTC", 1_700_000_000, 70_000.0);
+    let sigs = s.evaluate(&btc).await.unwrap().expect("btc maker quotes");
+    assert!(sigs.iter().any(|sig| sig.reason.starts_with("MM ")));
+    assert!(sigs.iter().all(|sig| sig.market_id == 1));
+
+    let mut eth = snapshot("ETH", 1_700_000_000, 3_500.0);
+    if let Some(book) = eth.order_books.get_mut("ETH") {
+        book.market_id = 0;
+    }
+    let eth_sigs = s.evaluate(&eth).await.unwrap();
+    let mm_eth = eth_sigs
+        .as_ref()
+        .map(|v| {
+            v.iter()
+                .any(|sig| sig.reason.starts_with("MM ") && sig.market_id == 0)
+        })
+        .unwrap_or(false);
+    assert!(!mm_eth, "overlay must not spray non-BTC names");
+}
+
+#[test]
+fn live_loop_refuses_persisted_mm_unless_maker_volume_is_armed() {
+    let src = include_str!("../main.rs");
+    assert!(
+        src.contains("refuse_persisted_mm"),
+        "live start must ignore a leftover market_making strategy_config"
+    );
+}
+
+#[test]
 fn live_loop_does_not_record_order_placement_as_fill_volume() {
     let src = include_str!("../main.rs");
     assert!(

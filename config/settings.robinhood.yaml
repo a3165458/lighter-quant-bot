@@ -94,6 +94,32 @@ trading:
         looking_depth: 0.025
         min_warmup_samples: 100
 
+    # Maker-volume overlay / gated second book. BOTH flags default false.
+    # Checking out this PR and restarting current yaml does NOT start MM quotes,
+    # even if data/robinhood/strategy_config.json still says market_making.
+    # Trend (EMA 7/21) stays the live book. Helsinki is too slow for taker/HFT.
+    #
+    # Later (not now): set enabled and allow_quotes to true.
+    #   A) Overlay (keep trend): both maker_volume flags true, leave
+    #      trend_following.enabled true. Name stays trend_following so
+    #      cancel-all MM does not wipe trend orders. Prefer two processes
+    #      if you need isolated books.
+    #   B) MM-only: trend_following.enabled false, market_making.enabled true,
+    #      both maker_volume flags true. Then live cancel-replace applies.
+    # Headline 成交量 stays fill-only; quotes increment order-notional at most.
+    maker_volume:
+      enabled: false
+      allow_quotes: false
+      quote_engine: simple
+      markets: [1]
+      order_notional: 20
+      max_position_notional: 60
+      inventory_skew: 0.5
+      markout_window_secs: 3
+      markout_adverse_bps: 4.0
+      backoff_secs: 15
+      min_half_spread_bps: 2.0
+
   # Position management
   position:
     max_single_trade_percent: 50

@@ -9,9 +9,11 @@ use super::grid_strategy::InventoryMode;
 use super::inventory_bias::{
     apply_inventory_exit_bias, apply_quality_spread_multiplier, InventoryExitBias,
 };
-use super::vol_obi::{
-    fallback_reduce_only, tick_size_from_levels, VolObiCalculator, VolObiConfig,
+use super::maker_volume::{
+    apply_markout_pull, apply_notional_inventory_cap, clamp_maker_only, MakerVolumeConfig,
+    MarkoutTracker,
 };
+use super::vol_obi::{fallback_reduce_only, tick_size_from_levels, VolObiCalculator, VolObiConfig};
 use super::Strategy;
 use crate::hft::BinanceAlphaHub;
 use crate::lighter::types::*;
@@ -231,8 +233,9 @@ pub fn should_requote(
     if elapsed < min_interval {
         return false;
     }
-    let mid_moved =
-        prev_mid > 0.0 && mid > 0.0 && (mid - prev_mid).abs() / prev_mid >= bid_spread.max(1e-6) * 0.25;
+    let mid_moved = prev_mid > 0.0
+        && mid > 0.0
+        && (mid - prev_mid).abs() / prev_mid >= bid_spread.max(1e-6) * 0.25;
     let inv_changed = (inv - prev_inv).abs() > 1e-9;
     mid_moved || inv_changed || elapsed >= ChronoDuration::seconds(30)
 }
@@ -259,6 +262,9 @@ pub struct MarketMakingStrategy {
     last_quotes: Mutex<HashMap<String, (f64, f64, DateTime<Utc>)>>,
     vol_engines: Mutex<HashMap<String, VolObiCalculator>>,
     binance: Option<Arc<BinanceAlphaHub>>,
+    /// When set, quotes require both enable flags and pass RH maker gates.
+    maker_volume: Option<MakerVolumeConfig>,
+    markout: Mutex<MarkoutTracker>,
 }
 
 impl MarketMakingStrategy {
@@ -302,7 +308,23 @@ impl MarketMakingStrategy {
             last_quotes: Mutex::new(HashMap::new()),
             vol_engines: Mutex::new(HashMap::new()),
             binance,
+            maker_volume: None,
+            markout: Mutex::new(MarkoutTracker::default()),
         })
+    }
+
+    pub fn with_maker_volume(mut self, cfg: MakerVolumeConfig) -> Self {
+        if cfg.order_notional > 0.0 {
+            self.params.order_notional = cfg.order_notional;
+        }
+        if cfg.inventory_skew >= 0.0 {
+            self.params.inventory_skew = cfg.inventory_skew;
+        }
+        if cfg.min_half_spread_bps > 0.0 {
+            self.vol_settings.vol_obi.min_half_spread_bps = cfg.min_half_spread_bps;
+        }
+        self.maker_volume = Some(cfg);
+        self
     }
 
     #[allow(dead_code)]
@@ -446,21 +468,63 @@ impl Strategy for MarketMakingStrategy {
     }
 
     async fn evaluate(&self, snapshot: &MarketSnapshot) -> Result<Option<Vec<TradeSignal>>> {
+        if let Some(gates) = &self.maker_volume {
+            if !gates.quotes_armed() {
+                return Ok(None);
+            }
+        }
+
         let mut signals = Vec::new();
         let mut last_quotes = self.last_quotes.lock().unwrap();
 
         for (symbol, book) in &snapshot.order_books {
+            if let Some(gates) = &self.maker_volume {
+                if !gates.allows_market(book.market_id) {
+                    continue;
+                }
+            }
             let inventory = snapshot.positions.get(symbol).copied().unwrap_or(0.0);
-            let Some(quote) = (if self.engine == QuoteEngine::VolObi {
-                self.quote_vol_obi(book, inventory)
-                    .and_then(|q| {
-                        apply_inventory_cap(q, inventory, self.params.max_inventory, self.inventory_mode)
-                    })
+            let Some(raw) = (if self.engine == QuoteEngine::VolObi {
+                self.quote_vol_obi(book, inventory).and_then(|q| {
+                    apply_inventory_cap(
+                        q,
+                        inventory,
+                        self.params.max_inventory,
+                        self.inventory_mode,
+                    )
+                })
             } else {
                 quote_from_book(book, inventory, &self.params, self.inventory_mode)
             }) else {
                 continue;
             };
+            let Some(best_bid) = book.best_bid() else {
+                continue;
+            };
+            let Some(best_ask) = book.best_ask() else {
+                continue;
+            };
+            let Some(mut quote) = clamp_maker_only(raw, best_bid, best_ask) else {
+                continue;
+            };
+            if let Some(gates) = &self.maker_volume {
+                let Some(capped) = apply_notional_inventory_cap(
+                    quote,
+                    inventory,
+                    quote.mid,
+                    gates.max_position_notional,
+                ) else {
+                    continue;
+                };
+                quote = capped;
+                let mut markout = self.markout.lock().unwrap();
+                markout.on_book(symbol, inventory, quote.mid, book.timestamp, gates);
+                let Some(pulled) = apply_markout_pull(quote, symbol, book.timestamp, &markout)
+                else {
+                    continue;
+                };
+                quote = pulled;
+            }
 
             if let Some((prev_mid, prev_inv, prev_ts)) = last_quotes.get(symbol) {
                 if !should_requote(
@@ -546,6 +610,7 @@ impl Strategy for MarketMakingStrategy {
     fn reset(&mut self) {
         self.last_quotes.lock().unwrap().clear();
         self.vol_engines.lock().unwrap().clear();
+        *self.markout.lock().unwrap() = MarkoutTracker::default();
     }
 
     fn clear_filled_state(&self) {

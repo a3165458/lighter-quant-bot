@@ -1,6 +1,7 @@
 pub mod dca_strategy;
 pub mod grid_strategy;
 pub mod inventory_bias;
+pub mod maker_volume;
 pub mod market_making;
 pub mod rolling;
 pub mod trend_strategy;
@@ -103,7 +104,7 @@ pub fn create_strategy(settings: &Config) -> Result<Box<dyn Strategy>> {
             .unwrap_or((slow_period_read / 2).max(1) as i64)
             as usize;
 
-        Ok(Box::new(
+        let trend = Box::new(
             trend_strategy::TrendStrategy::with_options(
                 fast_ma,
                 slow_ma,
@@ -114,12 +115,24 @@ pub fn create_strategy(settings: &Config) -> Result<Box<dyn Strategy>> {
             )
             .with_adx_filter(adx_threshold, adx_period)
             .with_slope_confirm(confirm_min, confirm_lookback),
-        ))
+        ) as Box<dyn Strategy>;
+        let gates = maker_volume::maker_volume_from_settings(settings);
+        if gates.quotes_armed() {
+            return Ok(Box::new(SplitBookStrategy {
+                trend,
+                maker: build_overlay_mm(settings)?,
+            }));
+        }
+        Ok(trend)
     } else if settings
         .get_bool("trading.strategies.market_making.enabled")
         .unwrap_or(false)
     {
-        Ok(Box::new(build_mm_from_settings(settings)?))
+        let mut mm = build_mm_from_settings(settings)?;
+        if maker_volume::maker_volume_configured(settings) {
+            mm = mm.with_maker_volume(maker_volume::maker_volume_from_settings(settings));
+        }
+        Ok(Box::new(mm))
     } else {
         // Default to grid strategy
         Ok(Box::new(grid_strategy::GridStrategy::new(10, 100.0, 0.02)))
@@ -180,7 +193,8 @@ fn vol_mm_settings_from_config(settings: &Config) -> market_making::VolObiMmSett
     {
         cfg.vol_obi.vol_to_half_spread = v;
     }
-    if let Ok(v) = settings.get_float("trading.strategies.market_making.vol_obi.min_half_spread_bps")
+    if let Ok(v) =
+        settings.get_float("trading.strategies.market_making.vol_obi.min_half_spread_bps")
     {
         cfg.vol_obi.min_half_spread_bps = v;
     }
@@ -205,6 +219,75 @@ fn quote_engine_from_settings(settings: &Config) -> market_making::QuoteEngine {
         .ok()
         .and_then(|raw| market_making::QuoteEngine::parse(&raw).ok())
         .unwrap_or(market_making::QuoteEngine::VolObi)
+}
+
+/// Overlay defaults to a thinner simple maker. Helsinki is too slow for taker/HFT vol_obi.
+fn overlay_quote_engine(settings: &Config) -> market_making::QuoteEngine {
+    settings
+        .get_string("trading.strategies.maker_volume.quote_engine")
+        .ok()
+        .and_then(|raw| market_making::QuoteEngine::parse(&raw).ok())
+        .unwrap_or(market_making::QuoteEngine::Simple)
+}
+
+fn build_overlay_mm(settings: &Config) -> Result<market_making::MarketMakingStrategy> {
+    let mode_raw = settings
+        .get_string("trading.strategies.market_making.inventory_mode")
+        .unwrap_or_else(|_| "hard".to_string());
+    reject_live_research_nocap(&mode_raw, "inventory_mode")?;
+    let mode = grid_strategy::InventoryMode::parse(&mode_raw)?;
+    let engine = overlay_quote_engine(settings);
+    let mut vol = vol_mm_settings_from_config(settings);
+    if engine == market_making::QuoteEngine::Simple {
+        vol.alpha_source = market_making::AlphaSource::Local;
+    }
+    let gates = maker_volume::maker_volume_from_settings(settings);
+    market_making::MarketMakingStrategy::with_engine(
+        mm_params_from_settings(settings),
+        mode,
+        engine,
+        vol,
+    )
+    .map(|mm| mm.with_maker_volume(gates))
+}
+
+/// Trend book plus a gated maker overlay. Name stays `trend_following` so the
+/// live cancel-all MM path does not wipe trend working orders.
+struct SplitBookStrategy {
+    trend: Box<dyn Strategy>,
+    maker: market_making::MarketMakingStrategy,
+}
+
+#[async_trait]
+impl Strategy for SplitBookStrategy {
+    fn name(&self) -> &str {
+        "trend_following"
+    }
+
+    async fn evaluate(
+        &self,
+        snapshot: &crate::lighter::types::MarketSnapshot,
+    ) -> Result<Option<Vec<crate::lighter::types::TradeSignal>>> {
+        let mut signals = self.trend.evaluate(snapshot).await?.unwrap_or_default();
+        if let Some(mm) = self.maker.evaluate(snapshot).await? {
+            signals.extend(mm);
+        }
+        if signals.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(signals))
+        }
+    }
+
+    fn reset(&mut self) {
+        self.trend.reset();
+        self.maker.reset();
+    }
+
+    fn clear_filled_state(&self) {
+        self.trend.clear_filled_state();
+        self.maker.clear_filled_state();
+    }
 }
 
 fn build_mm_from_settings(settings: &Config) -> Result<market_making::MarketMakingStrategy> {

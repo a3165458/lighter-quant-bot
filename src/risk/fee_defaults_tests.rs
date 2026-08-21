@@ -107,6 +107,18 @@ fn shipped_robinhood_live_keeps_trend_following_only() {
         "RH live must not re-enable vol_obi MM"
     );
     assert!(
+        !settings
+            .get_bool("trading.strategies.maker_volume.enabled")
+            .unwrap_or(true),
+        "RH live must keep maker_volume.enabled false"
+    );
+    assert!(
+        !settings
+            .get_bool("trading.strategies.maker_volume.allow_quotes")
+            .unwrap_or(true),
+        "RH live must keep maker_volume.allow_quotes false"
+    );
+    assert!(
         settings.get_bool("profitability.enabled").unwrap_or(false),
         "RH live must require the profitability gate"
     );

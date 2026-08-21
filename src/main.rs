@@ -652,25 +652,38 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
         let ds = dash_state.read().await;
         let has_saved_params = !ds.strategy_params.is_empty();
         if has_saved_params {
-            let params_str = ds
-                .strategy_params
-                .iter()
-                .map(|(k, v)| format!("{}={}", k, v))
-                .collect::<Vec<_>>()
-                .join(",");
-            info!(
-                "📂 Creating strategy from saved config: {} params={}",
-                ds.strategy_name, params_str
-            );
-            let strat = strategy::create_strategy_with_params(&ds.strategy_name, Some(&params_str))
-                .unwrap_or_else(|e| {
-                    warn!(
+            if strategy::maker_volume::refuse_persisted_mm(&ds.strategy_name, &settings) {
+                warn!(
+                    "Refusing persisted {} — maker_volume is not armed; using yaml strategy",
+                    ds.strategy_name
+                );
+                Arc::new(tokio::sync::RwLock::new(
+                    strategy::create_strategy(&settings)
+                        .expect("Failed to create default strategy"),
+                ))
+            } else {
+                let params_str = ds
+                    .strategy_params
+                    .iter()
+                    .map(|(k, v)| format!("{}={}", k, v))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                info!(
+                    "📂 Creating strategy from saved config: {} params={}",
+                    ds.strategy_name, params_str
+                );
+                let strat =
+                    strategy::create_strategy_with_params(&ds.strategy_name, Some(&params_str))
+                        .unwrap_or_else(|e| {
+                            warn!(
                         "Failed to create strategy from saved params: {}, falling back to defaults",
                         e
                     );
-                    strategy::create_strategy(&settings).expect("Failed to create default strategy")
-                });
-            Arc::new(tokio::sync::RwLock::new(strat))
+                            strategy::create_strategy(&settings)
+                                .expect("Failed to create default strategy")
+                        });
+                Arc::new(tokio::sync::RwLock::new(strat))
+            }
         } else {
             Arc::new(tokio::sync::RwLock::new(
                 strategy::create_strategy(&settings).context("Failed to initialize strategy")?,
