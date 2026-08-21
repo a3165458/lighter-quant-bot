@@ -672,16 +672,18 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
                     "📂 Creating strategy from saved config: {} params={}",
                     ds.strategy_name, params_str
                 );
-                let strat =
-                    strategy::create_strategy_with_params(&ds.strategy_name, Some(&params_str))
-                        .unwrap_or_else(|e| {
-                            warn!(
+                let strat = strategy::create_strategy_with_params_and_settings(
+                    &ds.strategy_name,
+                    Some(&params_str),
+                    Some(&settings),
+                )
+                .unwrap_or_else(|e| {
+                    warn!(
                         "Failed to create strategy from saved params: {}, falling back to defaults",
                         e
                     );
-                            strategy::create_strategy(&settings)
-                                .expect("Failed to create default strategy")
-                        });
+                    strategy::create_strategy(&settings).expect("Failed to create default strategy")
+                });
                 Arc::new(tokio::sync::RwLock::new(strat))
             }
         } else {
@@ -2265,13 +2267,14 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
                         "🔄 Strategy switch: {} → {}",
                         current_name, new_strategy_name
                     );
-                    match crate::strategy::create_strategy_with_params(
+                    match crate::strategy::create_strategy_with_params_and_settings(
                         &new_strategy_name,
                         if params_str.is_empty() {
                             None
                         } else {
                             Some(&params_str)
                         },
+                        Some(&settings),
                     ) {
                         Ok(new_strat) => {
                             *strategy.write().await = new_strat;
@@ -2289,9 +2292,10 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
                 } else if !params_str.is_empty() {
                     info!("🔧 Strategy params update: {:?}", params);
                     // Recreate with new params
-                    match crate::strategy::create_strategy_with_params(
+                    match crate::strategy::create_strategy_with_params_and_settings(
                         &current_name,
                         Some(&params_str),
+                        Some(&settings),
                     ) {
                         Ok(new_strat) => {
                             *strategy.write().await = new_strat;

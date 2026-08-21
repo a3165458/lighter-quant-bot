@@ -30,6 +30,11 @@ pub trait Strategy: Send + Sync {
     /// Clear filled/pending state (e.g. after stale orders cancelled).
     /// Uses interior mutability so it can be called via &self / Arc<dyn Strategy>.
     fn clear_filled_state(&self) {}
+
+    /// True when a gated maker-volume overlay is wrapped around this strategy.
+    fn has_maker_volume_overlay(&self) -> bool {
+        false
+    }
 }
 
 /// 根据配置创建策略
@@ -116,14 +121,7 @@ pub fn create_strategy(settings: &Config) -> Result<Box<dyn Strategy>> {
             .with_adx_filter(adx_threshold, adx_period)
             .with_slope_confirm(confirm_min, confirm_lookback),
         ) as Box<dyn Strategy>;
-        let gates = maker_volume::maker_volume_from_settings(settings);
-        if gates.quotes_armed() {
-            return Ok(Box::new(SplitBookStrategy {
-                trend,
-                maker: build_overlay_mm(settings)?,
-            }));
-        }
-        Ok(trend)
+        maybe_attach_maker_overlay(trend, settings)
     } else if settings
         .get_bool("trading.strategies.market_making.enabled")
         .unwrap_or(false)
@@ -251,6 +249,23 @@ fn build_overlay_mm(settings: &Config) -> Result<market_making::MarketMakingStra
     .map(|mm| mm.with_maker_volume(gates))
 }
 
+/// Attach SplitBook when both yaml maker_volume flags are armed.
+/// Used by the yaml factory and the persisted-strategy factory so a leftover
+/// `strategy_config.json` named `trend_following` still picks up the overlay.
+fn maybe_attach_maker_overlay(
+    trend: Box<dyn Strategy>,
+    settings: &Config,
+) -> Result<Box<dyn Strategy>> {
+    let gates = maker_volume::maker_volume_from_settings(settings);
+    if !gates.quotes_armed() {
+        return Ok(trend);
+    }
+    Ok(Box::new(SplitBookStrategy {
+        trend,
+        maker: build_overlay_mm(settings)?,
+    }))
+}
+
 /// Trend book plus a gated maker overlay. Name stays `trend_following` so the
 /// live cancel-all MM path does not wipe trend working orders.
 struct SplitBookStrategy {
@@ -288,6 +303,10 @@ impl Strategy for SplitBookStrategy {
         self.trend.clear_filled_state();
         self.maker.clear_filled_state();
     }
+
+    fn has_maker_volume_overlay(&self) -> bool {
+        true
+    }
 }
 
 fn build_mm_from_settings(settings: &Config) -> Result<market_making::MarketMakingStrategy> {
@@ -313,6 +332,17 @@ pub fn create_strategy_from_name(name: &str) -> Result<Box<dyn Strategy>> {
 /// 根据策略名和可选参数创建策略
 /// params 格式: "grid_count=10,investment=8.0,deviation=0.008"
 pub fn create_strategy_with_params(name: &str, params: Option<&str>) -> Result<Box<dyn Strategy>> {
+    create_strategy_with_params_and_settings(name, params, None)
+}
+
+/// Persisted / dashboard factory. When `settings` is present and both
+/// maker_volume flags are armed, a `trend_following` book gets the same
+/// gated SplitBook overlay as `create_strategy(&yaml)`.
+pub fn create_strategy_with_params_and_settings(
+    name: &str,
+    params: Option<&str>,
+    settings: Option<&Config>,
+) -> Result<Box<dyn Strategy>> {
     let kv = parse_params(params.unwrap_or(""));
 
     match name {
@@ -394,7 +424,7 @@ pub fn create_strategy_with_params(name: &str, params: Option<&str>) -> Result<B
                 .get("confirm_lookback")
                 .and_then(|v| v.parse().ok())
                 .unwrap_or((slow_ma / 2).max(1));
-            Ok(Box::new(
+            let trend = Box::new(
                 trend_strategy::TrendStrategy::with_options(
                     fast_ma,
                     slow_ma,
@@ -405,7 +435,12 @@ pub fn create_strategy_with_params(name: &str, params: Option<&str>) -> Result<B
                 )
                 .with_adx_filter(adx_threshold, adx_period)
                 .with_slope_confirm(confirm_min, confirm_lookback),
-            ))
+            ) as Box<dyn Strategy>;
+            if let Some(settings) = settings {
+                maybe_attach_maker_overlay(trend, settings)
+            } else {
+                Ok(trend)
+            }
         }
         "dca" => {
             let interval = kv

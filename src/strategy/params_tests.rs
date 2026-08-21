@@ -267,12 +267,68 @@ async fn armed_maker_volume_overlay_quotes_btc_only_and_keeps_trend_name() {
     assert!(!mm_eth, "overlay must not spray non-BTC names");
 }
 
+#[tokio::test]
+async fn persisted_trend_picks_up_armed_yaml_overlay_without_deleting_strategy_config() {
+    let persisted = "fast_ma=7,slow_ma=21,stop_loss=0.05,take_profit=0.06,notional=30";
+    let armed = Config::builder()
+        .add_source(config::File::with_name("config/settings.robinhood.yaml"))
+        .set_override("trading.strategies.maker_volume.enabled", true)
+        .unwrap()
+        .set_override("trading.strategies.maker_volume.allow_quotes", true)
+        .unwrap()
+        .build()
+        .expect("armed yaml");
+    let overlaid =
+        create_strategy_with_params_and_settings("trend_following", Some(persisted), Some(&armed))
+            .expect("persisted trend + armed yaml");
+    assert_eq!(overlaid.name(), "trend_following");
+    assert!(
+        overlaid.has_maker_volume_overlay(),
+        "saved trend_following must still wrap SplitBook when yaml is armed"
+    );
+    let sigs = overlaid
+        .evaluate(&snapshot("BTC", 1_700_000_000, 70_000.0))
+        .await
+        .unwrap()
+        .expect("overlay would quote");
+    assert!(sigs.iter().any(|sig| sig.reason.starts_with("MM ")));
+
+    let disarmed = Config::builder()
+        .add_source(config::File::with_name("config/settings.robinhood.yaml"))
+        .build()
+        .expect("shipped yaml");
+    let plain = create_strategy_with_params_and_settings(
+        "trend_following",
+        Some(persisted),
+        Some(&disarmed),
+    )
+    .expect("persisted trend + flags false");
+    assert_eq!(plain.name(), "trend_following");
+    assert!(
+        !plain.has_maker_volume_overlay(),
+        "flags false must keep a plain trend (no overlay)"
+    );
+    let quiet = plain
+        .evaluate(&snapshot("BTC", 1_700_000_000, 70_000.0))
+        .await
+        .unwrap();
+    let mm = quiet
+        .as_ref()
+        .map(|v| v.iter().any(|sig| sig.reason.starts_with("MM ")))
+        .unwrap_or(false);
+    assert!(!mm);
+}
+
 #[test]
 fn live_loop_refuses_persisted_mm_unless_maker_volume_is_armed() {
     let src = include_str!("../main.rs");
     assert!(
         src.contains("refuse_persisted_mm"),
         "live start must ignore a leftover market_making strategy_config"
+    );
+    assert!(
+        src.contains("create_strategy_with_params_and_settings"),
+        "live persist path must pass yaml so an armed overlay attaches"
     );
 }
 
