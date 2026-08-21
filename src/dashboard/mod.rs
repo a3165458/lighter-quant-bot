@@ -15,3 +15,7 @@ mod quant_agent_tests;
 #[cfg(test)]
 #[path = "event_log_tests.rs"]
 mod event_log_tests;
+
+#[cfg(test)]
+#[path = "pnl_state_tests.rs"]
+mod pnl_state_tests;

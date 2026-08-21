@@ -37,14 +37,17 @@ pub struct PersistentPnlData {
     pub trade_history: Vec<serde_json::Value>,
     /// Per-day realized PnL: key = "YYYY-MM-DD", value = realized pnl that day
     pub daily_pnl_map: std::collections::HashMap<String, f64>,
-    /// Lifetime notional volume Σ|price × quantity| across every recorded fill.
-    /// Survives the trade-history ring buffer so the History card does not
-    /// under-report after old fills are dropped.
+    /// Lifetime fill notional Σ|price × quantity|. Placement notional is
+    /// never stored here.
     #[serde(default)]
     pub total_volume: f64,
-    /// Lifetime count of close events (Partial/Full/Stop/…).
+    /// Lifetime count of real position closes (Full/Partial/Emergency/Liquidation).
     #[serde(default)]
     pub total_closed_trades: u64,
+    /// Successful order-placement notional (quotes that may never fill).
+    /// Not the dashboard headline volume.
+    #[serde(default)]
+    pub total_order_notional: f64,
 }
 
 impl PersistentPnlData {
@@ -213,10 +216,12 @@ pub struct DashboardState {
     pub peak_equity: f64,
     pub equity_history: Vec<(i64, f64)>, // (unix_ts, equity) — for chart
     pub pnl_history: Vec<(i64, f64)>,    // (unix_ts, cumulative_pnl)
-    /// Lifetime notional volume Σ|price × quantity| (survives ring-buffer trim).
+    /// Lifetime fill notional Σ|price × quantity| (survives ring-buffer trim).
     pub total_volume: f64,
-    /// Lifetime close-event count (survives ring-buffer trim).
+    /// Lifetime real close count (survives ring-buffer trim).
     pub total_closed_trades: u64,
+    /// Successful order-placement notional; never labeled as fill volume.
+    pub total_order_notional: f64,
     // Strategy config (can be modified from dashboard)
     pub strategy_params: std::collections::HashMap<String, String>,
     pub strategy_config_changed: bool,
@@ -257,109 +262,101 @@ impl DashboardState {
             daily_pnl_map: daily_map,
             total_volume: self.total_volume,
             total_closed_trades: self.total_closed_trades,
+            total_order_notional: self.total_order_notional,
         };
         persistent.save(&self.network_name);
     }
 
-    /// Restore PnL state from persistent data
-    pub fn restore_pnl(&mut self, data: &PersistentPnlData) {
-        self.total_realized_pnl = data.total_realized_pnl;
-        // Only restore initial_equity if it was set (non-zero)
-        if data.initial_equity > 0.0 {
-            self.initial_equity = data.initial_equity;
-        }
-        if data.peak_equity > self.peak_equity {
-            self.peak_equity = data.peak_equity;
-        }
-        // Merge equity history: keep persisted + add current
-        if !data.equity_history.is_empty() {
-            self.equity_history = data.equity_history.clone();
-        }
-        if !data.pnl_history.is_empty() {
-            self.pnl_history = data.pnl_history.clone();
-        }
-        // Restore trade history
-        if !data.trade_history.is_empty() {
-            self.trade_history = data.trade_history.clone();
-        }
-        // Lifetime volume / close counts: prefer persisted values; if missing
-        // (old state files), recompute from the retained buffer as a floor.
-        let (buf_vol, buf_closes) = Self::stats_from_trades(&self.trade_history);
-        self.total_volume = if data.total_volume > 0.0 {
-            data.total_volume
+    /// Restore PnL state from persistent data.
+    /// Returns true when counters were rewritten so the caller can flush disk.
+    pub fn restore_pnl(&mut self, data: &PersistentPnlData) -> bool {
+        let initial_equity = if data.initial_equity > 0.0 {
+            data.initial_equity
         } else {
-            buf_vol
+            self.initial_equity
         };
-        self.total_closed_trades = if data.total_closed_trades > 0 {
-            data.total_closed_trades
+        let peak_equity = data.peak_equity.max(self.peak_equity);
+        let equity_history = if data.equity_history.is_empty() {
+            self.equity_history.clone()
         } else {
-            buf_closes
+            data.equity_history.clone()
         };
-        // Restore today's daily PnL
+        let pnl_history = if data.pnl_history.is_empty() {
+            self.pnl_history.clone()
+        } else {
+            data.pnl_history.clone()
+        };
+        let corrected = super::pnl_accounting::correct_persisted_pnl(
+            super::pnl_accounting::PersistedPnlInputs {
+                trade_history: data.trade_history.clone(),
+                total_volume: data.total_volume,
+                total_closed_trades: data.total_closed_trades,
+                total_realized_pnl: data.total_realized_pnl,
+                daily_pnl_map: data.daily_pnl_map.clone(),
+                peak_equity,
+                equity_history: &equity_history,
+                initial_equity,
+                constructor_equity: self.equity,
+                unrealized: self.unrealized_pnl,
+            },
+        );
+
+        self.total_realized_pnl = corrected.total_realized_pnl;
+        if initial_equity > 0.0 {
+            self.initial_equity = initial_equity;
+        }
+        self.peak_equity = peak_equity;
+        self.equity_history = equity_history;
+        self.pnl_history = pnl_history;
+        self.trade_history = corrected.trade_history;
+        self.total_volume = corrected.total_volume;
+        self.total_closed_trades = corrected.total_closed_trades;
+        self.total_order_notional = data.total_order_notional;
+        self.daily_pnl_map = corrected.daily_pnl_map;
         let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
-        self.daily_realized_pnl = data.daily_pnl_map.get(&today).copied().unwrap_or(0.0);
-        self.daily_pnl_map = data.daily_pnl_map.clone();
+        self.daily_realized_pnl = self.daily_pnl_map.get(&today).copied().unwrap_or(0.0);
         info!(
-            "📂 Restored PnL: total={:.4}, daily={:.4}, peak={:.2}, trades={}, volume={:.2}, closed={}",
+            "📂 Restored PnL: total={:.4}, daily={:.4}, peak={:.2}, trades={}, volume={:.2}, closed={}, corrected={}",
             self.total_realized_pnl,
             self.daily_realized_pnl,
             self.peak_equity,
             self.trade_history.len(),
             self.total_volume,
-            self.total_closed_trades
+            self.total_closed_trades,
+            corrected.changed
         );
+        corrected.changed
     }
 
-    /// Notional volume and close-event count from a trade list.
+    /// Fill notional and real close count from a trade list.
     pub fn stats_from_trades(trades: &[serde_json::Value]) -> (f64, u64) {
-        let mut volume = 0.0_f64;
-        let mut closes = 0_u64;
-        for t in trades {
-            let price = t.get("price").and_then(|v| v.as_f64()).unwrap_or(0.0);
-            let qty = t.get("quantity").and_then(|v| v.as_f64()).unwrap_or(0.0);
-            volume += (price * qty).abs();
-            let action = t
-                .get("action")
-                .or_else(|| t.get("close_type"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            if action_is_close(action) {
-                closes += 1;
-            }
-        }
-        (volume, closes)
+        super::pnl_accounting::fill_stats_from_history(trades)
     }
 
-    /// Append a fill to the ring buffer and update lifetime volume/close counters.
-    pub fn push_trade(&mut self, trade: serde_json::Value) {
-        let price = trade.get("price").and_then(|v| v.as_f64()).unwrap_or(0.0);
-        let qty = trade
-            .get("quantity")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.0);
-        self.total_volume += (price * qty).abs();
-        let action = trade
-            .get("action")
-            .or_else(|| trade.get("close_type"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        if action_is_close(action) {
-            self.total_closed_trades += 1;
+    /// Record a successful order *placement*. This is not fill volume.
+    pub fn record_order_placement(&mut self, price: f64, qty: f64) {
+        if price.is_finite() && qty.is_finite() {
+            self.total_order_notional += (price * qty).abs();
         }
+    }
+
+    /// Append a fill to the ring buffer and update lifetime fill counters.
+    /// Non-fill rows (quote placements) are ignored.
+    pub fn push_trade(&mut self, trade: serde_json::Value) {
+        if !super::pnl_accounting::trade_is_fill(&trade) {
+            return;
+        }
+        let (delta_volume, delta_closes) =
+            super::pnl_accounting::fill_stats_from_history(&[trade.clone()]);
+        self.total_volume += delta_volume;
+        self.total_closed_trades += delta_closes;
+        self.total_trades += 1;
         self.trade_history.push(trade);
         let len = self.trade_history.len();
         if len > TRADE_HISTORY_LIMIT {
             self.trade_history.drain(..len - TRADE_HISTORY_LIMIT);
         }
     }
-}
-
-fn action_is_close(action: &str) -> bool {
-    let lower = action.to_ascii_lowercase();
-    lower.contains("close")
-        || lower.contains("stop")
-        || lower.contains("emergency")
-        || lower.contains("liquidat")
 }
 
 pub type SharedDashboardState = Arc<RwLock<DashboardState>>;
@@ -497,6 +494,7 @@ async fn handle_ws_connection(mut socket: WebSocket, state: SharedDashboardState
                     "daily_realized_pnl": ds.daily_realized_pnl,
                     "total_realized_pnl": ds.total_realized_pnl,
                     "total_volume": ds.total_volume,
+                    "total_order_notional": ds.total_order_notional,
                     "total_closed_trades": ds.total_closed_trades,
                     "initial_equity": ds.initial_equity,
                     "peak_equity": ds.peak_equity,
@@ -905,6 +903,7 @@ async fn pnl_handler(State(state): State<SharedDashboardState>) -> impl IntoResp
         "initial_equity": ds.initial_equity,
         "peak_equity": ds.peak_equity,
         "total_volume": total_volume,
+        "total_order_notional": ds.total_order_notional,
         "total_closed_trades": total_closed_trades,
         "trade_history_limit": TRADE_HISTORY_LIMIT,
         "trade_history_len": ds.trade_history.len(),

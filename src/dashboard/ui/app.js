@@ -25,8 +25,18 @@
         '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
     })[char]);
     const tradeAction = t => t.action || t.close_type || t.trade_type || 'Order';
-    const isCloseAction = action => /Close|Stop|Emergency|Liquidat/i.test(action || '');
-    const isTerminalCloseAction = action => /Full Close|Stop|Emergency|Liquidat/i.test(action || '');
+    const CLOSE_ACTIONS = new Set(['Full Close', 'Partial Close', 'Emergency Close', 'Liquidation']);
+    const isCloseAction = action => CLOSE_ACTIONS.has(String(action || '').trim());
+    const isTerminalCloseAction = action => {
+        const a = String(action || '').trim();
+        return a === 'Full Close' || a === 'Emergency Close' || a === 'Liquidation';
+    };
+    const isFillTrade = t => {
+        if (!t) return false;
+        if (t.fill === false) return false;
+        if (t.fill === true) return true;
+        return isCloseAction(tradeAction(t));
+    };
 
     // ── i18n ──
     const i18nStrings = {
@@ -1017,6 +1027,7 @@
         if (!allTrades.length) return;
         let totalPnl = 0, closeTrades = 0, vol = 0;
         allTrades.forEach(t => {
+            if (!isFillTrade(t)) return;
             const isClose = isCloseAction(tradeAction(t));
             vol += Math.abs(parseFloat(t.price) * parseFloat(t.quantity));
             if (isClose) {

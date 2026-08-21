@@ -500,3 +500,24 @@ fn total_pnl_display_prefers_equity_identity_over_accumulated_realized() {
         "fallback must still be mark-to-market, not raw total_realized_pnl first"
     );
 }
+
+#[test]
+fn history_volume_counts_fills_not_quote_placements() {
+    assert!(
+        DASHBOARD_APP_JS.contains("const isFillTrade = t =>"),
+        "local history fallback must ignore unfilled quote placements"
+    );
+    assert!(
+        DASHBOARD_APP_JS.contains("if (!isFillTrade(t)) return;"),
+        "volume fallback must skip non-fills"
+    );
+    assert!(
+        DASHBOARD_APP_JS
+            .contains("'Full Close', 'Partial Close', 'Emergency Close', 'Liquidation'"),
+        "close counting must use exact fill actions, not /stop/ substrings"
+    );
+    assert!(
+        !DASHBOARD_APP_JS.contains("/Close|Stop|Emergency|Liquidat/i"),
+        "loose close regex treated every placement reason containing stop as a close"
+    );
+}

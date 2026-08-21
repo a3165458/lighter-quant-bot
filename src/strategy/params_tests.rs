@@ -226,6 +226,23 @@ fn live_loop_reconciles_empty_exchange_open_orders_instead_of_ignoring() {
 }
 
 #[test]
+fn live_loop_does_not_record_order_placement_as_fill_volume() {
+    let src = include_str!("../main.rs");
+    assert!(
+        src.contains("record_order_placement"),
+        "successful place_order must record placement notional separately"
+    );
+    assert!(
+        !src.contains("Determine action: Open (new position) or Add"),
+        "must not write Open/Add into trade_history on order placement"
+    );
+    assert!(
+        src.contains("\"fill\": true"),
+        "account-book Open/Add/Close rows must be tagged as fills"
+    );
+}
+
+#[test]
 fn live_loop_re_resolves_universe_from_collected_bbos() {
     let src = include_str!("../main.rs");
     assert!(

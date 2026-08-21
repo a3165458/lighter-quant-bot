@@ -297,7 +297,7 @@ fn event_from_trade(trade: &Value, fallback_ms: i64) -> DashboardEvent {
         .map(|value| value.timestamp_millis())
         .unwrap_or(fallback_ms);
     let action = trade.get("action").and_then(Value::as_str).unwrap_or("");
-    let is_submitted_order = matches!(action, "Open" | "Add");
+    let is_fill = super::pnl_accounting::trade_is_fill(trade);
     let detail = if action.is_empty() {
         format!("{side} {symbol} @ {price:.decimals$}")
     } else {
@@ -306,10 +306,10 @@ fn event_from_trade(trade: &Value, fallback_ms: i64) -> DashboardEvent {
 
     DashboardEvent {
         timestamp_ms,
-        kind: if is_submitted_order {
-            DashboardEventKind::Order
-        } else {
+        kind: if is_fill {
             DashboardEventKind::Fill
+        } else {
+            DashboardEventKind::Order
         },
         detail,
     }
