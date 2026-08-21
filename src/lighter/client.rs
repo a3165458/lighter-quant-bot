@@ -1,6 +1,6 @@
 use reqwest::Client;
 use serde_json::Value;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use tracing::{debug, error, info, warn};
 
 use super::error::LighterError;
@@ -16,6 +16,7 @@ pub struct LighterClient {
     nonce: AtomicI64,
     /// 需要轮询活跃订单的市场（默认主网 ETH/BTC；启动时按配置覆盖）
     active_markets: std::sync::RwLock<Vec<u32>>,
+    empty_account_logged: AtomicBool,
 }
 
 impl LighterClient {
@@ -45,6 +46,7 @@ impl LighterClient {
             api_key_index,
             nonce: AtomicI64::new(0),
             active_markets: std::sync::RwLock::new(vec![0, 1]),
+            empty_account_logged: AtomicBool::new(false),
         }
     }
 
@@ -153,114 +155,32 @@ impl LighterClient {
 
     /// Get account info
     pub async fn get_account_info(&self) -> Result<AccountInfo, LighterError> {
-        let url = format!(
+        let mut url = format!(
             "{}/api/v1/account?by=index&value={}",
             self.base_url, self.account_index
         );
+        // Same auth query the open-order path already uses. Missing token is
+        // fine — public account payloads still parse — but a live RH account
+        // should be read with the already-initialized signer when present.
+        if let Ok(token) = ffi::create_auth_token(chrono::Utc::now().timestamp() + 60) {
+            url.push_str("&auth=");
+            url.push_str(&token);
+        }
         debug!("GET {}", url);
 
         let resp: Value = self.http_get_json(&url).await?;
-
-        // Try both "detailed_accounts" and "accounts" keys
-        let account = resp["detailed_accounts"]
-            .as_array()
-            .and_then(|arr| arr.first())
-            .or_else(|| resp["accounts"].as_array().and_then(|arr| arr.first()))
-            .ok_or_else(|| LighterError::ApiError {
-                code: -1,
-                message: "No account found in response".into(),
-            })?;
-
-        let collateral = account["collateral"]
-            .as_str()
-            .and_then(|s| s.parse::<f64>().ok())
-            .or_else(|| {
-                account["available_balance"]
-                    .as_str()
-                    .and_then(|s| s.parse().ok())
-            })
-            .unwrap_or(0.0);
-
-        let free_balance = account["available_balance"]
-            .as_str()
-            .and_then(|s| s.parse::<f64>().ok())
-            .unwrap_or(collateral);
-
-        // Note: Lighter API has no "equity" field, falls back to collateral.
-        // True equity is computed below as collateral + Σ(unrealized_pnl).
-
-        let mut positions = Vec::new();
-        if let Some(pos_arr) = account["positions"].as_array() {
-            for p in pos_arr {
-                // Position field can be "position" or "size"
-                let size: f64 = p["position"]
-                    .as_str()
-                    .and_then(|s| s.parse().ok())
-                    .or_else(|| p["size"].as_str().and_then(|s| s.parse().ok()))
-                    .unwrap_or(0.0);
-                // Apply sign field if present
-                let sign: f64 = p["sign"]
-                    .as_i64()
-                    .map(|s| if s >= 0 { 1.0 } else { -1.0 })
-                    .unwrap_or(1.0);
-                let signed_size = size * sign;
-                if signed_size.abs() < 1e-12 {
-                    continue;
-                }
-                let side = if signed_size >= 0.0 {
-                    Side::Buy
-                } else {
-                    Side::Sell
-                };
-                let entry_price: f64 = p["avg_entry_price"]
-                    .as_str()
-                    .and_then(|s| s.parse().ok())
-                    .or_else(|| p["entry_price"].as_str().and_then(|s| s.parse().ok()))
-                    .unwrap_or(0.0);
-                let unrealized_pnl: f64 = p["unrealized_pnl"]
-                    .as_str()
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or(0.0);
-                let market_index = p["market_id"]
-                    .as_u64()
-                    .or_else(|| p["market_id"].as_str().and_then(|s| s.parse().ok()))
-                    .or_else(|| p["market_index"].as_str().and_then(|s| s.parse().ok()))
-                    .unwrap_or(0) as u32;
-
-                let symbol = p["symbol"]
-                    .as_str()
-                    .map(|s| s.to_string())
-                    .unwrap_or_else(|| match market_index {
-                        0 => "ETH".to_string(),
-                        1 => "BTC".to_string(),
-                        _ => format!("MARKET_{}", market_index),
-                    });
-
-                positions.push(Position {
-                    symbol,
-                    side,
-                    size: signed_size.abs(),
-                    entry_price,
-                    unrealized_pnl,
-                    leverage: 1.0,
-                });
-            }
+        let info = super::account::parse_account_info(&resp)?;
+        if super::account::account_looks_empty(&info)
+            && !self.empty_account_logged.swap(true, Ordering::Relaxed)
+        {
+            warn!(
+                "Account payload empty; continuing without positions ({})",
+                resp.get("message")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("empty accounts")
+            );
         }
-
-        // Lighter API has no separate "equity" field — `collateral` is the margin balance
-        // which does NOT include unrealized PnL. True equity = collateral + Σ(unrealized_pnl).
-        let total_unrealized: f64 = positions.iter().map(|p| p.unrealized_pnl).sum();
-        let true_equity = collateral + total_unrealized;
-
-        Ok(AccountInfo {
-            balances: vec![Balance {
-                asset: "USDC".into(),
-                free: free_balance,
-                locked: 0.0,
-            }],
-            positions,
-            total_equity: true_equity,
-        })
+        Ok(info)
     }
 
     /// Get market info for a specific market

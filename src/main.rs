@@ -333,9 +333,19 @@ async fn run_live_trading(config_path: &str) -> Result<()> {
                 }
             }
         }
-        fetched.ok_or_else(|| last_err.unwrap())
-    }
-    .context("Failed to fetch account info")?;
+        match fetched {
+            Some(acct) => acct,
+            None => {
+                warn!(
+                    "Failed to fetch account info after retries ({}); continuing with an empty snapshot",
+                    last_err
+                        .map(|e| e.to_string())
+                        .unwrap_or_else(|| "unknown error".into())
+                );
+                lighter::account::empty_account_info()
+            }
+        }
+    };
     let equity = account.total_equity;
     let free_balance = account.balances.first().map(|b| b.free).unwrap_or(0.0);
     info!(

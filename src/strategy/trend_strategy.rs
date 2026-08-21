@@ -2,7 +2,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Mutex;
-use tracing::debug;
+use tracing::{debug, info};
 
 use super::Strategy;
 use crate::lighter::types::*;
@@ -49,6 +49,10 @@ struct PositionState {
 struct TrendState {
     position: Option<PositionState>,
     pending_side: Option<Side>,
+    /// Live-only: last observed fast>slow after the process is up.
+    /// `None` until the first live tick, so a still-crossed EMA regime cannot
+    /// seed an entry on restart.
+    last_fast_above_slow: Option<bool>,
 }
 
 impl TrendStrategy {
@@ -265,12 +269,42 @@ impl Strategy for TrendStrategy {
             };
 
             let separation = (fast - slow).abs() / slow;
-            let cross_up = prev_fast <= prev_slow && fast > slow;
-            let cross_down = prev_fast >= prev_slow && fast < slow;
             let bull_regime = fast > slow;
             let bear_regime = fast < slow;
+            let (cross_up, cross_down) = if snapshot.positions_authoritative {
+                // Live: only a regime transition AFTER the process is up counts.
+                // A historical last-bar gold/death cross, or a still-crossed
+                // EMA7/21 regime, must not seed pending on restart.
+                let prev_regime = state.last_fast_above_slow;
+                state.last_fast_above_slow = Some(bull_regime);
+                if state.position.is_some() {
+                    // Never seed an entry while an exchange position is open.
+                    state.pending_side = None;
+                }
+                if prev_regime.is_none() {
+                    info!(
+                        "{}: live EMA regime already {}; not seeding an entry until a fresh cross after process start",
+                        symbol,
+                        if bull_regime { "bull" } else { "bear" }
+                    );
+                    state.pending_side = None;
+                    (false, false)
+                } else {
+                    (
+                        matches!(prev_regime, Some(false)) && bull_regime,
+                        matches!(prev_regime, Some(true)) && bear_regime,
+                    )
+                }
+            } else {
+                (
+                    prev_fast <= prev_slow && fast > slow,
+                    prev_fast >= prev_slow && fast < slow,
+                )
+            };
 
-            if cross_up {
+            if snapshot.positions_authoritative && state.position.is_some() {
+                state.pending_side = None;
+            } else if cross_up {
                 state.pending_side = Some(Side::Buy);
             } else if cross_down {
                 state.pending_side = Some(Side::Sell);

@@ -188,9 +188,11 @@ cargo run --release -- scan --url https://api.rh.lighter.xyz \
 
 ### 2026-08-20
 
-- **诚实摩擦与订单同步**
+- **诚实摩擦、订单同步、重启误开仓、账户解析**
   - 实盘 `profitability` 与回测 `commission_percent` 不再默认 0；按 RH 现实摩擦保留费用/滑点/逆选择地板，而不是宣传的 0 maker/taker
   - 交易所回报 0 挂单且本地仍有幽灵单时，确认后以交易所为准并对账，不再无限忽略空同步
+  - 重启不再把当前仍交叉的 EMA Regime 当成新开仓；已有持仓时绝不 seed
+  - `/api/v1/account` 兼容官方 `accounts` / 包装对象 / 数字字段；空响应只打一次日志并继续跑风控循环
   - Robinhood 实盘保持仅启用 `trend_following`，并下调名义金额
 
 ### 2026-08-16

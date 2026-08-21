@@ -369,6 +369,94 @@ async fn slope_confirm_allows_rising_cross() {
 }
 
 #[tokio::test]
+async fn live_restart_does_not_seed_entry_from_current_ema_regime() {
+    // Same down-then-up fixture that produces a live-looking bull regime.
+    let mut closes: Vec<f64> = (0..12).map(|i| 110.0 - i as f64).collect();
+    closes.extend((0..8).map(|i| 98.0 + i as f64 * 3.0));
+    let last = *closes.last().unwrap();
+
+    let strategy = TrendStrategy::with_options(3, 6, 0.05, 0.1, 0.0, 60.0);
+    let mut open = snapshot_with_candles("BTC", 1_700_800_000, &closes);
+    open.positions_authoritative = true;
+    open.positions.insert("BTC".to_string(), 0.000866);
+    open.position_entry_prices.insert("BTC".to_string(), last);
+
+    let first = strategy.evaluate(&open).await.unwrap();
+    assert!(
+        first
+            .as_ref()
+            .map(|sigs| sigs.iter().any(|sig| !sig.risk_reducing))
+            .unwrap_or(false)
+            == false,
+        "if an open position already exists, never seed a new live entry"
+    );
+
+    let strategy_flat = TrendStrategy::with_options(3, 6, 0.05, 0.1, 0.0, 60.0);
+    let mut flat = snapshot_with_candles("BTC", 1_700_800_000, &closes);
+    flat.positions_authoritative = true;
+    assert!(
+        strategy_flat.evaluate(&flat).await.unwrap().is_none(),
+        "still-crossed EMA regime after process start must not seed pending Buy"
+    );
+    assert!(
+        strategy_flat.evaluate(&flat).await.unwrap().is_none(),
+        "the same live snapshot must not enter until a fresh post-start cross"
+    );
+}
+
+#[tokio::test]
+async fn live_process_may_enter_only_after_a_fresh_cross() {
+    let strategy = TrendStrategy::with_options(3, 6, 0.05, 0.1, 0.0, 60.0);
+    let mut closes: Vec<f64> = (0..12).map(|i| 110.0 - i as f64).collect();
+    closes.extend((0..8).map(|i| 98.0 + i as f64 * 3.0));
+    let mut start = snapshot_with_candles("BTC", 1_700_900_000, &closes);
+    start.positions_authoritative = true;
+    assert!(
+        strategy.evaluate(&start).await.unwrap().is_none(),
+        "startup observation arms the live regime and must not enter"
+    );
+
+    let mut opened = false;
+    for i in 0..16 {
+        closes.push(closes.last().copied().unwrap() - 3.0);
+        let mut snap = snapshot_with_candles("BTC", 1_700_910_000 + i * 3600, &closes);
+        snap.positions_authoritative = true;
+        let _ = strategy.evaluate(&snap).await.unwrap();
+    }
+    for i in 0..16 {
+        closes.push(closes.last().copied().unwrap() + 3.5);
+        let mut snap = snapshot_with_candles("BTC", 1_700_930_000 + i * 3600, &closes);
+        snap.positions_authoritative = true;
+        if let Some(sigs) = strategy.evaluate(&snap).await.unwrap() {
+            if sigs
+                .iter()
+                .any(|sig| sig.side == Side::Buy && !sig.risk_reducing)
+            {
+                opened = true;
+                break;
+            }
+        }
+    }
+    assert!(
+        opened,
+        "a genuine EMA cross after the process is up may still enter"
+    );
+}
+
+#[test]
+fn live_trend_source_never_seeds_pending_from_regime() {
+    let src = include_str!("trend_strategy.rs");
+    assert!(
+        !src.contains("seeded live pending"),
+        "restart must not seed a pending entry from the current EMA regime"
+    );
+    assert!(
+        src.contains("not seeding an entry until a fresh cross after process start"),
+        "live path must wait for a post-start cross"
+    );
+}
+
+#[tokio::test]
 async fn slope_confirm_blocks_flat_cross() {
     let strategy =
         TrendStrategy::with_options(3, 6, 0.05, 0.1, 0.0, 1000.0).with_slope_confirm(0.05, 5);
